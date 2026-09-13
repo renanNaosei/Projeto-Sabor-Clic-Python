@@ -1,0 +1,756 @@
+```html
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sabor & Clic — Cardápio Digital</title>
+
+    <style>
+        :root {
+            --laranja: #E85D04;
+            --laranja-escuro: #c94d00;
+            --verde: #2D6A4F;
+            --fundo: #F7F7F7;
+            --branco: #FFFFFF;
+            --texto: #222222;
+            --cinza: #666666;
+            --borda: #e8e8e8;
+            --erro: #C62828;
+            --sombra: 0 8px 24px rgba(0, 0, 0, 0.07);
+            --raio: 16px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: Inter, Arial, sans-serif;
+            background: var(--fundo);
+            color: var(--texto);
+            line-height: 1.5;
+        }
+
+        header {
+            background: var(--branco);
+            border-bottom: 1px solid var(--borda);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .topo {
+            max-width: 1180px;
+            margin: auto;
+            padding: 20px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo {
+            width: 46px;
+            height: 46px;
+            border-radius: 14px;
+            background: var(--laranja);
+            color: white;
+            display: grid;
+            place-items: center;
+            font-size: 23px;
+            font-weight: bold;
+        }
+
+        .logo-text h1 {
+            font-size: 22px;
+            line-height: 1.1;
+        }
+
+        .logo-text span {
+            color: var(--cinza);
+            font-size: 13px;
+        }
+
+        .carrinho-indicador {
+            background: #fff3eb;
+            color: var(--laranja);
+            padding: 10px 15px;
+            border-radius: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        main {
+            max-width: 1180px;
+            margin: auto;
+            padding: 34px 24px 50px;
+        }
+
+        .hero {
+            margin-bottom: 28px;
+        }
+
+        .hero h2 {
+            font-size: 30px;
+            margin-bottom: 5px;
+        }
+
+        .hero p {
+            color: var(--cinza);
+        }
+
+        .busca {
+            margin-top: 20px;
+            width: 100%;
+            padding: 14px 16px;
+            border: 1px solid var(--borda);
+            border-radius: 12px;
+            background: white;
+            font-size: 15px;
+            outline: none;
+        }
+
+        .busca:focus {
+            border-color: var(--laranja);
+            box-shadow: 0 0 0 3px rgba(232, 93, 4, 0.12);
+        }
+
+        .categorias {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 22px 0 28px;
+        }
+
+        .categoria {
+            border: 1px solid var(--borda);
+            background: white;
+            color: var(--texto);
+            border-radius: 999px;
+            padding: 9px 15px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: .2s;
+        }
+
+        .categoria:hover,
+        .categoria.ativa {
+            background: var(--laranja);
+            color: white;
+            border-color: var(--laranja);
+        }
+
+        #cardapio {
+            scroll-margin-top: 105px;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 20px;
+        }
+
+        .card-produto {
+            background: white;
+            border: 1px solid var(--borda);
+            border-radius: var(--raio);
+            overflow: hidden;
+            box-shadow: var(--sombra);
+            transition: transform .2s, box-shadow .2s;
+        }
+
+        .card-produto:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, .10);
+        }
+
+        .produto-imagem {
+            height: 155px;
+            background: linear-gradient(135deg, #fff0e6, #ffe0cc);
+            display: grid;
+            place-items: center;
+            font-size: 58px;
+        }
+
+        .produto-conteudo {
+            padding: 18px;
+        }
+
+        .produto-categoria {
+            color: var(--laranja);
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .produto-conteudo h3 {
+            font-size: 20px;
+            margin-bottom: 7px;
+        }
+
+        .produto-descricao {
+            color: var(--cinza);
+            font-size: 14px;
+            min-height: 42px;
+            margin-bottom: 15px;
+        }
+
+        .produto-rodape {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .preco {
+            font-size: 19px;
+            font-weight: 800;
+        }
+
+        button {
+            font-family: inherit;
+        }
+
+        .area-pedido {
+            display: grid;
+            grid-template-columns: 1.25fr .75fr;
+            gap: 22px;
+            margin-top: 42px;
+            align-items: start;
+        }
+
+        .painel {
+            background: white;
+            border: 1px solid var(--borda);
+            border-radius: var(--raio);
+            padding: 22px;
+            box-shadow: var(--sombra);
+        }
+
+        .painel h2 {
+            font-size: 21px;
+            margin-bottom: 5px;
+        }
+
+        .painel-subtitulo {
+            color: var(--cinza);
+            font-size: 14px;
+            margin-bottom: 18px;
+        }
+
+        .item-carrinho {
+            border-bottom: 1px solid var(--borda);
+            padding: 14px 0;
+        }
+
+        .item-carrinho:last-child {
+            border-bottom: none;
+        }
+
+        .item-carrinho h3 {
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+
+        .item-carrinho p {
+            color: var(--cinza);
+            font-size: 14px;
+        }
+
+        #total {
+            border-top: 2px solid var(--borda);
+            margin-top: 10px;
+            padding-top: 17px;
+            font-size: 19px;
+            color: var(--verde);
+        }
+
+        .vazio {
+            color: var(--cinza);
+            background: var(--fundo);
+            border-radius: 12px;
+            padding: 18px;
+            text-align: center;
+        }
+
+        .campo input:focus {
+            border-color: var(--laranja);
+            box-shadow: 0 0 0 3px rgba(232, 93, 4, .12);
+        }
+
+        footer {
+            text-align: center;
+            color: var(--cinza);
+            font-size: 13px;
+            padding: 0 20px 30px;
+        }
+
+        @media (max-width: 900px) {
+            #cardapio {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .area-pedido {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 620px) {
+            .topo {
+                padding: 16px;
+            }
+
+            main {
+                padding: 25px 16px 40px;
+            }
+
+            .hero h2 {
+                font-size: 25px;
+            }
+
+            #cardapio {
+                grid-template-columns: 1fr;
+            }
+
+            .carrinho-indicador {
+                font-size: 13px;
+                padding: 8px 10px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <div class="topo">
+            <div class="logo-area">
+                <div class="logo">S</div>
+
+                <div class="logo-text">
+                    <h1>Sabor & Clic</h1>
+                    <span>Cardápio Digital</span>
+                </div>
+            </div>
+
+            <div class="carrinho-indicador">
+                🛒 Seu pedido
+            </div>
+        </div>
+    </header>
+
+    <main>
+
+        <section class="hero">
+            <h2>Escolha seu pedido</h2>
+
+            <p>
+                Encontre seu prato, adicione ao carrinho e finalize.
+            </p>
+
+            <input
+                class="busca"
+                type="search"
+                id="busca"
+                placeholder="🔎 Buscar produto..."
+            >
+
+            <div class="categorias">
+
+                <button
+                    class="categoria ativa"
+                    data-categoria="Todos"
+                >
+                    🍽️ Todos
+                </button>
+
+                <button
+                    class="categoria"
+                    data-categoria="Lanche"
+                >
+                    🍔 Lanches
+                </button>
+
+                <button
+                    class="categoria"
+                    data-categoria="Pizza"
+                >
+                    🍕 Pizzas
+                </button>
+
+                <button
+                    class="categoria"
+                    data-categoria="Massas"
+                >
+                    🍝 Massas
+                </button>
+
+            </div>
+        </section>
+
+        <section id="cardapio"></section>
+
+        <section class="area-pedido">
+
+            <div class="painel">
+
+                <h2>🛒 Seu carrinho</h2>
+
+                <p class="painel-subtitulo">
+                    Confira os itens antes de finalizar.
+                </p>
+
+                <div id="carrinho"></div>
+
+                <div id="total"></div>
+
+            </div>
+
+        </section>
+
+    </main>
+
+    <footer>
+        Sabor & Clic — Projeto Integrador
+    </footer>
+
+    <script>
+
+        let cardapio = [
+            {
+                nome: "Hambúrguer",
+                preco: 25,
+                categoria: "Lanche",
+                descricao: "Hambúrguer artesanal preparado na hora.",
+                emoji: "🍔"
+            },
+
+            {
+                nome: "Pizza",
+                preco: 40,
+                categoria: "Pizza",
+                descricao: "Pizza saborosa para compartilhar.",
+                emoji: "🍕"
+            },
+
+            {
+                nome: "Lasanha",
+                preco: 30,
+                categoria: "Massas",
+                descricao: "Lasanha cremosa e preparada com carinho.",
+                emoji: "🍝"
+            }
+        ];
+
+        let carrinho = [];
+
+        let primeiroPrato = cardapio[0];
+
+        console.log(primeiroPrato.nome);
+
+        for (let prato of cardapio) {
+            console.log(prato.nome);
+        }
+
+        for (let propriedade in primeiroPrato) {
+            console.log(propriedade);
+        }
+
+        cardapio.forEach((prato) => {
+            console.log(prato.nome + " - R$ " + prato.preco);
+        });
+
+        let areaCardapio = document.getElementById("cardapio");
+        let areaCarrinho = document.getElementById("carrinho");
+        let areaTotal = document.getElementById("total");
+
+        function mostrarCardapio(lista = cardapio) {
+
+            areaCardapio.innerHTML = "";
+
+            if (lista.length === 0) {
+
+                areaCardapio.innerHTML = `
+                    <div
+                        class="painel"
+                        style="grid-column: 1 / -1;"
+                    >
+                        <p class="vazio">
+                            Nenhum produto encontrado.
+                        </p>
+                    </div>
+                `;
+
+                return;
+            }
+
+            lista.forEach((prato) => {
+
+                let indice = cardapio.indexOf(prato);
+
+                let card = document.createElement("article");
+
+                card.className = "card-produto";
+
+                card.innerHTML = `
+                    <div class="produto-imagem">
+                        ${prato.emoji}
+                    </div>
+
+                    <div class="produto-conteudo">
+
+                        <div class="produto-categoria">
+                            ${prato.categoria}
+                        </div>
+
+                        <h3>
+                            ${prato.nome}
+                        </h3>
+
+                        <p class="produto-descricao">
+                            ${prato.descricao}
+                        </p>
+
+                        <div class="produto-rodape">
+
+                            <span class="preco">
+                                R$ ${prato.preco.toFixed(2).replace(".", ",")}
+                            </span>
+
+                            <button
+                                class="btn-adicionar"
+                                onclick="adicionarCarrinho(${indice})"
+                            >
+                                Adicionar
+                            </button>
+
+                        </div>
+
+                    </div>
+                `;
+
+                areaCardapio.appendChild(card);
+            });
+        }
+
+        function adicionarCarrinho(indice) {
+
+            let pratoEscolhido = cardapio[indice];
+
+            let produtoExistente = carrinho.find(
+                (item) => item.nome === pratoEscolhido.nome
+            );
+
+            if (produtoExistente) {
+
+                produtoExistente.quantidade++;
+
+            } else {
+
+                let produtoCarrinho = {
+                    nome: pratoEscolhido.nome,
+                    preco: pratoEscolhido.preco,
+                    quantidade: 1
+                };
+
+                carrinho.push(produtoCarrinho);
+            }
+
+            mostrarCarrinho();
+        }
+
+        function mostrarCarrinho() {
+
+            areaCarrinho.innerHTML = "";
+
+            let total = 0;
+
+            if (carrinho.length === 0) {
+
+                areaCarrinho.innerHTML = `
+                    <p class="vazio">
+                        Seu carrinho está vazio.<br>
+                        Adicione algum produto acima.
+                    </p>
+                `;
+
+            } else {
+
+                carrinho.forEach((item) => {
+
+                    let subtotal = item.preco * item.quantidade;
+
+                    total += subtotal;
+
+                    let itemCarrinho =
+                        document.createElement("div");
+
+                    itemCarrinho.className = "item-carrinho";
+
+                    itemCarrinho.innerHTML = `
+                        <h3>
+                            ${item.nome}
+                        </h3>
+
+                        <p>
+                            R$ ${item.preco.toFixed(2).replace(".", ",")}
+                            × ${item.quantidade}
+                        </p>
+
+                        <p>
+                            Subtotal:
+                            <strong>
+                                R$ ${subtotal.toFixed(2).replace(".", ",")}
+                            </strong>
+                        </p>
+                    `;
+
+                    areaCarrinho.appendChild(itemCarrinho);
+                });
+            }
+
+            areaTotal.innerHTML = `
+                <strong>
+                    Total: R$ ${total.toFixed(2).replace(".", ",")}
+                </strong>
+            `;
+        }
+
+        let formulario =
+            document.getElementById("formPedido");
+
+        formulario.addEventListener("submit", (evento) => {
+
+            evento.preventDefault();
+
+            let nome = document
+                .getElementById("nome")
+                .value
+                .trim();
+
+            let email = document
+                .getElementById("email")
+                .value
+                .trim();
+
+            if (nome === "") {
+
+                alert("Digite seu nome!");
+
+                return;
+            }
+
+            if (email === "") {
+
+                alert("Digite seu e-mail!");
+
+                return;
+            }
+
+            if (carrinho.length === 0) {
+
+                alert(
+                    "Adicione pelo menos um produto ao carrinho!"
+                );
+
+                return;
+            }
+
+            alert("Pedido enviado com sucesso!");
+
+            console.log("Nome do cliente:", nome);
+            console.log("E-mail do cliente:", email);
+            console.log("Itens do pedido:", carrinho);
+
+            carrinho = [];
+
+            mostrarCarrinho();
+
+            formulario.reset();
+        });
+
+        let busca =
+            document.getElementById("busca");
+
+        let categoriaSelecionada = "Todos";
+
+        function atualizarCardapio() {
+
+            let texto = busca.value
+                .toLowerCase()
+                .trim();
+
+            let filtrados = cardapio.filter((prato) => {
+
+                let correspondeCategoria =
+                    categoriaSelecionada === "Todos" ||
+                    prato.categoria === categoriaSelecionada;
+
+                let correspondeBusca =
+                    texto === "" ||
+                    prato.nome
+                        .toLowerCase()
+                        .includes(texto) ||
+                    prato.categoria
+                        .toLowerCase()
+                        .includes(texto);
+
+                return (
+                    correspondeCategoria &&
+                    correspondeBusca
+                );
+            });
+
+            mostrarCardapio(filtrados);
+
+            document
+                .getElementById("cardapio")
+                .scrollIntoView({
+                    behavior: "smooth",
+                    block: "start"
+                });
+        }
+
+        busca.addEventListener("input", () => {
+            atualizarCardapio();
+        });
+
+        document
+            .querySelectorAll(".categoria")
+            .forEach((botao) => {
+
+                botao.addEventListener("click", () => {
+
+                    document
+                        .querySelectorAll(".categoria")
+                        .forEach((item) => {
+                            item.classList.remove("ativa");
+                        });
+
+                    botao.classList.add("ativa");
+
+                    categoriaSelecionada =
+                        botao.dataset.categoria;
+
+                    busca.value = "";
+
+                    atualizarCardapio();
+                });
+            });
+
+        mostrarCardapio();
+        mostrarCarrinho();
+
+    </script>
+
+</body>
+
+</html>
+```
