@@ -60,3 +60,19 @@ Acesse <http://127.0.0.1:5500>. Use sempre `127.0.0.1` (não `localhost`) para f
 
 Iguais aos da versão SQL Server (CSRF, RBAC, sessão HttpOnly, limite de login, validação de entrada).
 Erros de regra de negócio do banco (estoque insuficiente, horário em conflito) continuam voltando como HTTP 409.
+
+## 4. Telas por perfil (front-end)
+
+| Perfil | O que aparece na página |
+|---|---|
+| Visitante | Cardápio, carrinho, login e cadastro |
+| Cliente | Finalizar pedido + **Meus pedidos** (status em 4 etapas) |
+| Cozinheiro | **Fila da cozinha**: avança o status (Aguardando → Iniciando Preparo → Em Preparo → Pronto para Entrega) |
+| Administrador | Fila da cozinha só para acompanhar (sem botões de ação) |
+
+As duas listas se atualizam sozinhas a cada 10 segundos, sem F5 (pausam quando a aba está oculta).
+As regras de permissão valem no servidor; o front só decide o que mostrar.
+
+Classes (POO, `frontend/js/models.js`): `Usuario` é a base e `Cliente`, `Cozinheiro` e `Administrador`
+herdam dela, sobrescrevendo `podeFazerPedidos`, `podeVerFila` e `podeAtualizarStatus` (polimorfismo).
+`Usuario.deApi()` escolhe a subclasse conforme o perfil devolvido pela API.

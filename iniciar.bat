@@ -20,7 +20,7 @@ if not exist "%RAIZ%backend\instance\sabor_clic.db" (
 )
 
 start "Sabor e Clic - API" /D "%RAIZ%backend" cmd /k ""%PY%" run.py"
-start "Sabor e Clic - Front" /D "%RAIZ%frontend" cmd /k ""%PY%" -m http.server 5500 --bind 127.0.0.1"
+start "Sabor e Clic - Front" /D "%RAIZ%frontend" cmd /k ""%PY%" servidor.py 5500"
 
 timeout /t 3 /nobreak >nul
 start "" http://127.0.0.1:5500
