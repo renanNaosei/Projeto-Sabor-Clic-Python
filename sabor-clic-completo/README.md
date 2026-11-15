@@ -1,8 +1,3 @@
-# Sabor & Clic — Parte 2 (versão SQLite)
-
-Mesma aplicação da versão SQL Server, trocando só o banco. Para ver o que mudou, leia
-`DIFERENCAS_SQLServer_vs_SQLite.md`.
-
 ## Estrutura
 
 | Pasta | Conteúdo |
