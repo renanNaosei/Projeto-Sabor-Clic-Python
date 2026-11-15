@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f36b21">
+  <title>Sabor &amp; Clic | Cardápio Digital</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header>
+    <div class="topbar">
+      <div class="brand">
+        <div class="brand-mark">S</div>
+        <div>
+          <h1>Sabor &amp; Clic</h1>
+          <small>Cardápio digital • feito para matar a fome</small>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="access-btn" id="darkMode" type="button" aria-pressed="false">🌙 Modo escuro</button>
+        <button class="access-btn" id="highContrast" type="button" aria-pressed="false">◐ Alto contraste</button>
+        <span class="user-pill" id="usuarioLogado" hidden></span>
+        <button class="access-btn" id="botaoLogout" type="button" hidden>Sair</button>
+        <button class="cart-pill" id="goCart" type="button">🛒 Meu pedido <span id="counter">0</span></button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-content">
+        <div class="eyebrow">Bateu a fome? Você está no lugar certo.</div>
+        <h2>Seu momento merece um <em>sabor especial.</em></h2>
+        <p>Explore nosso cardápio, escolha seus favoritos e monte seu pedido de um jeito simples e rápido.</p>
+        <div class="hero-note">🍽️ Preparado com carinho • Pedido fácil e rápido</div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <div class="search-wrap">
+        <span aria-hidden="true">⌕</span>
+        <input id="search" class="search" type="search" aria-label="Buscar no cardápio" placeholder="Busque por prato, ingrediente ou categoria...">
+      </div>
+      <button class="clear-search" id="clearSearch" type="button">Limpar</button>
+    </div>
+
+    <div class="section-heading" id="cardapio">
+      <h2>Explore o cardápio</h2>
+      <p>Toque em uma categoria para filtrar ou ir direto aos pratos.</p>
+    </div>
+
+    <nav class="categories" id="categoryNav" aria-label="Categorias do cardápio"></nav>
+
+    <div class="menu-info">
+      <span id="resultCount" aria-live="polite">—</span>
+      <span>Preços em R$</span>
+    </div>
+
+    <div class="empty-results" id="emptyResults" hidden>
+      <p>Nenhum prato encontrado para sua busca ou filtro.</p>
+      <button class="add-btn" id="resetFiltersBtn" type="button">Mostrar todos os pratos</button>
+    </div>
+
+    <div id="menuRoot" aria-busy="true"></div>
+
+    <section class="lower-grid" id="pedido">
+      <div class="panel">
+        <h2>🛒 Seu carrinho</h2>
+        <p class="panel-sub">Confira os itens e ajuste as quantidades.</p>
+        <div id="cartItems">
+          <div class="empty-cart">Seu carrinho está vazio. Escolha algo gostoso no cardápio!</div>
+        </div>
+        <div class="total-row">
+          <span>Total do pedido</span>
+          <strong id="total">R$ 0,00</strong>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>📋 Finalizar pedido</h2>
+        <p class="panel-sub" id="checkoutSub">Entre na sua conta para finalizar o pedido.</p>
+
+        <form id="formLogin">
+          <div class="field">
+            <label for="email">E-mail</label>
+            <input id="email" type="email" required autocomplete="username" placeholder="seuemail@exemplo.com">
+          </div>
+          <div class="field">
+            <label for="senha">Senha</label>
+            <input id="senha" type="password" required autocomplete="current-password">
+          </div>
+          <button class="checkout-btn" id="botaoLogin" type="submit">Entrar</button>
+        </form>
+
+        <form id="formCadastro" hidden>
+          <div class="field">
+            <label for="cadNome">Nome</label>
+            <input id="cadNome" type="text" required maxlength="150" autocomplete="name">
+          </div>
+          <div class="field">
+            <label for="cadEmail">E-mail</label>
+            <input id="cadEmail" type="email" required maxlength="150" autocomplete="username">
+          </div>
+          <div class="field">
+            <label for="cadSenha">Senha (mínimo 8 caracteres)</label>
+            <input id="cadSenha" type="password" required minlength="8" maxlength="128" autocomplete="new-password">
+          </div>
+          <button class="checkout-btn" id="botaoCadastro" type="submit">Criar conta</button>
+        </form>
+
+        <p class="conta-alternar" id="alternarConta">
+          <button class="link-btn" id="linkCadastro" type="button">Não tem conta? Cadastre-se</button>
+          <button class="link-btn" id="linkLogin" type="button" hidden>Já tenho conta</button>
+        </p>
+
+        <p class="empty-cart" id="avisoPerfil" hidden></p>
+
+        <form id="checkoutForm" hidden>
+          <div class="field">
+            <label for="customerNotes">Observações do pedido (opcional)</label>
+            <textarea id="customerNotes" maxlength="300" placeholder="Ex: Tirar cebola, ponto da carne bem passado, enviar sachês..."></textarea>
+          </div>
+          <button class="checkout-btn" id="botaoPedido" type="submit">Confirmar meu pedido →</button>
+          <p class="checkout-note">O pedido é registrado no sistema em nome da conta conectada.</p>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel painel-pedidos" id="painelMeusPedidos" aria-labelledby="tituloMeusPedidos" hidden>
+      <h2 id="tituloMeusPedidos">📦 Meus pedidos</h2>
+      <p class="panel-sub" id="subMeusPedidos">Acompanhe o andamento. A lista atualiza sozinha.</p>
+      <div id="listaMeusPedidos" class="lista-pedidos"></div>
+    </section>
+
+    <section class="panel painel-pedidos" id="painelFila" aria-labelledby="tituloFila" hidden>
+      <h2 id="tituloFila">👨‍🍳 Fila da cozinha</h2>
+      <p class="panel-sub" id="subFila">Pedidos em ordem de chegada. A lista atualiza sozinha.</p>
+      <div id="listaFila" class="lista-pedidos"></div>
+      <h3 class="subtitulo-fila" id="tituloProntos" hidden>Prontos para entrega</h3>
+      <div id="listaProntos" class="lista-pedidos lista-prontos"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="modal-backdrop" id="orderModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-icon">✅</div>
+        <div>
+          <div class="modal-order-id" id="modalOrderNumber">Pedido de demonstração</div>
+          <h3 id="modalTitle">Pedido confirmado!</h3>
+        </div>
+      </div>
+      <p id="modalGreeting" class="modal-greeting"></p>
+      <div class="modal-summary" id="modalSummary"></div>
+      <button class="checkout-btn" id="closeModalBtn" type="button">Fechar e voltar ao cardápio</button>
+    </div>
+  </div>
+
+  <footer>© 2026 Sabor &amp; Clic • Um clique, muitos sabores. ❤️</footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

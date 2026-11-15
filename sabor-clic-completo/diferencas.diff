@@ -1,0 +1,1915 @@
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/.env.example sabor-clic/backend/.env.example
+--- sqlserver/backend/.env.example	2026-11-13 23:57:08.635520677 -0300
++++ sqlite/backend/.env.example	2026-11-14 07:22:12.065157021 -0300
+@@ -2,11 +2,10 @@
+ # Se ficar vazia, o app gera uma chave aleatória a cada execução (as sessões caem ao reiniciar).
+ SECRET_KEY=
+ 
+-# SQL Server (padrão do projeto). Ajuste servidor/instância e o nome do driver ODBC instalado
+-# (veja com: python -c "import pyodbc; print(pyodbc.drivers())").
+-DATABASE_URL=mssql+pyodbc://@localhost\SQLEXPRESS/SaborClic?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes
+-# Driver 18: acrescente &TrustServerCertificate=yes
+-# Modo reserva sem SQL Server (sem triggers): DATABASE_URL=sqlite:///sabor_clic.db
++# SQLite (padrão): o arquivo fica em backend/instance/sabor_clic.db e é criado pelo comando
++#   flask --app run init-db
++# Para outro arquivo: sqlite:///outro_nome.db   |   caminho absoluto: sqlite:////home/usuario/sabor_clic.db
++DATABASE_URL=sqlite:///sabor_clic.db
+ 
+ # Em HTTPS de produção, obrigatoriamente true.
+ SESSION_COOKIE_SECURE=false
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/app/__init__.py sabor-clic/backend/app/__init__.py
+--- sqlserver/backend/app/__init__.py	2026-11-14 00:00:21.902698622 -0300
++++ sqlite/backend/app/__init__.py	2026-11-14 07:22:12.059190501 -0300
+@@ -129,12 +129,18 @@
+ 
+     # ------------------------------- comandos CLI ---------------------------------
+     @app.cli.command("init-db")
+-    def init_db():
+-        """Cria as tabelas (útil no SQLite; no SQL Server use os scripts de database/)."""
+-        from app import models  # noqa: F401
+-
+-        db.create_all()
+-        click.echo("Tabelas criadas/validadas.")
++    @click.option("--sem-dados", is_flag=True, help="Cria só as tabelas e triggers, sem os dados de exemplo.")
++    @click.option("--sim", is_flag=True, help="Não pedir confirmação se o banco já tiver dados.")
++    def init_db(sem_dados, sim):
++        """Recria o banco SQLite executando os scripts de database/ (APAGA os dados atuais)."""
++        from app.banco import banco_tem_dados, criar_banco
++
++        if banco_tem_dados() and not sim:
++            click.confirm("O banco já tem dados e eles serão apagados. Continuar?", abort=True)
++        scripts = criar_banco(com_dados=not sem_dados)
++        click.echo("Banco criado com: " + ", ".join(scripts))
++        if not sem_dados:
++            click.echo("Usuários de teste (senha Senha@123): ana.admin@, bruno.cliente@, carla.cozinha@ ... saborclic.com")
+ 
+     @app.cli.command("criar-usuario")
+     @click.option("--nome", prompt="Nome")
+@@ -172,15 +178,4 @@
+         db.session.commit()
+         click.echo(f"Usuário '{papel}' criado com ID {usuario.id_usuario}.")
+ 
+-    @app.cli.command("seed-demo")
+-    def seed_demo():
+-        """Popula usuários de demonstração e o cardápio (modo reserva em SQLite).
+-
+-        No SQL Server os dados vêm de database/02_insercoes_basicas.sql.
+-        """
+-        from app.seed import popular_demo
+-
+-        resumo = popular_demo()
+-        click.echo(resumo)
+-
+     return app
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/app/banco.py sabor-clic/backend/app/banco.py
+--- sqlserver/backend/app/banco.py	1969-12-31 21:00:00.000000000 -0300
++++ sqlite/backend/app/banco.py	2026-11-14 07:22:12.044993460 -0300
+@@ -0,0 +1,43 @@
++"""Criação do banco SQLite a partir dos scripts da pasta database/.
++
++Os scripts SQL continuam sendo a fonte do schema (tabelas, restrições, triggers);
++este módulo só os executa na ordem certa. O SQLAlchemy não cria tabelas.
++"""
++from pathlib import Path
++
++from app.extensions import db
++
++PASTA_SQL = Path(__file__).resolve().parents[2] / "database"
++SCRIPTS_ESTRUTURA = ("01_modelo_fisico.sql", "20_triggers.sql")
++SCRIPT_DADOS = "02_insercoes_basicas.sql"
++
++
++def banco_tem_dados():
++    """True se a tabela Usuario já existe e tem linhas (evita apagar dados sem querer)."""
++    try:
++        return db.session.execute(db.text("SELECT COUNT(*) FROM Usuario")).scalar() > 0
++    except Exception:
++        db.session.rollback()
++        return False
++
++
++def criar_banco(com_dados=True):
++    """Recria o banco do zero: 01 (tabelas) -> 02 (dados, opcional) -> 20 (triggers).
++
++    A ordem importa: os dados de exemplo entram antes dos triggers para não
++    gerar baixa de estoque nos pedidos históricos.
++    """
++    scripts = [SCRIPTS_ESTRUTURA[0]]
++    if com_dados:
++        scripts.append(SCRIPT_DADOS)
++    scripts.append(SCRIPTS_ESTRUTURA[1])
++
++    conexao = db.engine.raw_connection()
++    try:
++        for nome in scripts:
++            conexao.executescript((PASTA_SQL / nome).read_text(encoding="utf-8"))
++        conexao.commit()
++    finally:
++        conexao.close()
++    db.session.remove()
++    return scripts
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/app/config.py sabor-clic/backend/app/config.py
+--- sqlserver/backend/app/config.py	2026-11-13 23:57:08.636730181 -0300
++++ sqlite/backend/app/config.py	2026-11-14 07:22:01.061769061 -0300
+@@ -2,10 +2,8 @@
+ import secrets
+ from datetime import timedelta
+ 
+-DATABASE_PADRAO = (
+-    "mssql+pyodbc://@localhost\\SQLEXPRESS/SaborClic"
+-    "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"
+-)
++# SQLite: um arquivo só, criado em backend/instance/ (não precisa instalar servidor nem driver).
++DATABASE_PADRAO = "sqlite:///sabor_clic.db"
+ 
+ 
+ def _booleano(nome, padrao="false"):
+@@ -13,7 +11,7 @@
+ 
+ 
+ class Config:
+-    """Configuração padrão: SQL Server local. Tudo pode ser trocado por variável de ambiente."""
++    """Configuração padrão: SQLite local. Tudo pode ser trocado por variável de ambiente."""
+ 
+     # Sem SECRET_KEY no ambiente, usa uma chave aleatória (nunca um valor fixo conhecido).
+     SECRET_KEY = os.getenv("SECRET_KEY") or secrets.token_hex(32)
+@@ -21,7 +19,6 @@
+ 
+     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", DATABASE_PADRAO)
+     SQLALCHEMY_TRACK_MODIFICATIONS = False
+-    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
+ 
+     SESSION_COOKIE_NAME = "saborclic_session"
+     SESSION_COOKIE_HTTPONLY = True
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/app/models/booking.py sabor-clic/backend/app/models/booking.py
+--- sqlserver/backend/app/models/booking.py	2026-11-13 23:57:32.204443096 -0300
++++ sqlite/backend/app/models/booking.py	2026-11-14 07:22:01.063232676 -0300
+@@ -26,8 +26,6 @@
+ 
+ class Agendamento(db.Model):
+     __tablename__ = "Agendamento"
+-    # Tabela com trigger (conflito de horário): mesmo motivo do Item_Pedido.
+-    __table_args__ = {"implicit_returning": False}
+ 
+     id_agendamento = db.Column(db.Integer, primary_key=True)
+     id_usuario_cliente = db.Column(
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/app/models/order.py sabor-clic/backend/app/models/order.py
+--- sqlserver/backend/app/models/order.py	2026-11-13 23:57:32.202490776 -0300
++++ sqlite/backend/app/models/order.py	2026-11-14 07:22:01.062922102 -0300
+@@ -61,9 +61,6 @@
+ 
+ class ItemPedido(db.Model):
+     __tablename__ = "Item_Pedido"
+-    # Tabela com trigger no SQL Server: o INSERT ... OUTPUT do SQLAlchemy falha nesse caso,
+-    # então o returning implícito fica desligado.
+-    __table_args__ = {"implicit_returning": False}
+ 
+     id_item_pedido = db.Column(db.Integer, primary_key=True)
+     id_pedido = db.Column(db.Integer, db.ForeignKey("Pedido.id_pedido"), nullable=False)
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/app/seed.py sabor-clic/backend/app/seed.py
+--- sqlserver/backend/app/seed.py	2026-11-14 00:00:40.228556070 -0300
++++ sqlite/backend/app/seed.py	1969-12-31 21:00:00.000000000 -0300
+@@ -1,80 +0,0 @@
+-"""Dados de demonstração para o modo reserva (SQLite). No SQL Server use database/02_insercoes_basicas.sql."""
+-import json
+-from decimal import Decimal
+-from pathlib import Path
+-
+-from app.extensions import db
+-from app.models import (
+-    Administrador,
+-    Bancada,
+-    Cliente,
+-    Cozinheiro,
+-    Ingrediente,
+-    Prato,
+-    Usuario,
+-)
+-
+-SENHA_DEMO = "Senha@123"
+-USUARIOS = [
+-    ("Ana Souza", "ana.admin@saborclic.com", "administrador"),
+-    ("Bruno Lima", "bruno.cliente@saborclic.com", "cliente"),
+-    ("Daniela Costa", "daniela.cliente@saborclic.com", "cliente"),
+-    ("Carla Nunes", "carla.cozinha@saborclic.com", "cozinheiro"),
+-    ("Marcos Pereira", "marcos.cozinha@saborclic.com", "cozinheiro"),
+-]
+-BANCADAS = [
+-    ("Bancada 01", "Cozinha equipada com fogão industrial e coifa.", 4, "Fogão 4 bocas, forno, coifa, geladeira", "45.00", "Disponível"),
+-    ("Bancada 02", "Bancada ampla para produção de marmitas.", 6, "Fogão 6 bocas, forno combinado, freezer", "60.00", "Disponível"),
+-    ("Bancada 03", "Espaço em reforma da exaustão.", 3, "Fogão 2 bocas, geladeira", "35.00", "Manutenção"),
+-]
+-
+-
+-def popular_demo():
+-    if Usuario.query.first() is not None:
+-        return "Banco já possui dados; nada foi alterado."
+-
+-    for indice, (nome, email, papel) in enumerate(USUARIOS):
+-        usuario = Usuario(nome=nome, email=email, tipo_usuario=papel)
+-        usuario.definir_senha(SENHA_DEMO)
+-        if papel == "administrador":
+-            usuario.administrador = Administrador(nivel_permissao="gestor_catalogo")
+-        elif papel == "cliente":
+-            usuario.cliente = Cliente(telefone="(11) 90000-000%d" % indice, endereco_entrega="Rua das Flores, 123 - São Paulo/SP")
+-        else:
+-            usuario.cozinheiro = Cozinheiro(turno_trabalho="Manhã" if indice == 3 else "Tarde")
+-        db.session.add(usuario)
+-    db.session.flush()
+-
+-    admin_id = Usuario.query.filter_by(tipo_usuario="administrador").one().id_usuario
+-    dados = json.loads(Path(__file__).with_name("seed_data.json").read_text(encoding="utf-8"))
+-    for p in dados["pratos"]:
+-        db.session.add(
+-            Prato(
+-                nome=p["nome"],
+-                descricao=p["descricao"],
+-                preco=Decimal(p["preco"]),
+-                categoria=p["categoria"],
+-                disponivel=p["disponivel"],
+-                imagem_url=p["imagem"],
+-                id_usuario_admin=admin_id,
+-            )
+-        )
+-    for i in dados["ingredientes"]:
+-        db.session.add(
+-            Ingrediente(
+-                nome=i["nome"],
+-                unidade_medida=i["unidade_medida"],
+-                quantidade_estoque=Decimal(i["quantidade_estoque"]),
+-                estoque_minimo=Decimal(i["estoque_minimo"]),
+-            )
+-        )
+-    for ident, desc, cap, equip, valor, status in BANCADAS:
+-        db.session.add(
+-            Bancada(identificacao=ident, descricao=desc, capacidade=cap, equipamentos=equip, valor_hora=Decimal(valor), status=status)
+-        )
+-    db.session.commit()
+-    return (
+-        f"{len(USUARIOS)} usuários, {len(dados['pratos'])} pratos, "
+-        f"{len(dados['ingredientes'])} ingredientes e {len(BANCADAS)} bancadas criados. "
+-        f"Senha de todos: {SENHA_DEMO}"
+-    )
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/app/services/erros.py sabor-clic/backend/app/services/erros.py
+--- sqlserver/backend/app/services/erros.py	2026-11-13 23:59:21.606882547 -0300
++++ sqlite/backend/app/services/erros.py	2026-11-14 07:22:01.063470919 -0300
+@@ -16,30 +16,23 @@
+         self.detalhes = detalhes
+ 
+ 
+-# Números usados nos THROW de database/20_triggers.sql
+-ERRO_ESTOQUE_INSUFICIENTE = "50001"
+-ERRO_CONFLITO_HORARIO = "50002"
+-
+-_CODIGOS = {
+-    ERRO_ESTOQUE_INSUFICIENTE: "ESTOQUE_INSUFICIENTE",
+-    ERRO_CONFLITO_HORARIO: "CONFLITO_HORARIO",
+-}
++# O SQLite não tem THROW com número: os triggers usam RAISE(ABORT, 'texto fixo')
++# (database/20_triggers.sql). O backend reconhece o erro por esse texto.
++_ERROS_DOS_TRIGGERS = (
++    ("Estoque insuficiente", "ESTOQUE_INSUFICIENTE"),
++    ("Conflito de horário", "CONFLITO_HORARIO"),
++)
+ 
+ 
+ def traduzir_erro_do_banco(erro):
+-    """Se o erro veio de um THROW dos triggers devolve ErroDeNegocio 409; senão, None."""
++    """Se o erro veio de um RAISE(ABORT) dos triggers devolve ErroDeNegocio 409; senão, None."""
+     if not isinstance(erro, DBAPIError):
+         return None
+ 
+-    texto = str(getattr(erro, "orig", erro))
+-    for numero, codigo in _CODIGOS.items():
+-        marcador = f"({numero})"
+-        if marcador in texto:
+-            # Ex.: "[42000] [...][SQL Server]Estoque insuficiente do ingrediente: Arroz (50001)"
+-            mensagem = texto.split(marcador)[0].split("]")[-1].strip()
+-            return ErroDeNegocio(
+-                mensagem or "Operação recusada pelo banco de dados.", 409, codigo
+-            )
++    texto = str(getattr(erro, "orig", erro)).strip()
++    for trecho, codigo in _ERROS_DOS_TRIGGERS:
++        if texto.startswith(trecho):
++            return ErroDeNegocio(texto, 409, codigo)
+     return None
+ 
+ 
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/requirements.txt sabor-clic/backend/requirements.txt
+--- sqlserver/backend/requirements.txt	2026-11-13 23:57:08.633007127 -0300
++++ sqlite/backend/requirements.txt	2026-11-14 07:22:12.062407598 -0300
+@@ -2,5 +2,4 @@
+ Flask-SQLAlchemy>=3.1,<4.0
+ Flask-Cors>=4.0,<6.0
+ SQLAlchemy>=2.0,<3.0
+-pyodbc>=5.0,<6.0
+ python-dotenv>=1.0,<2.0
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/tests/conftest.py sabor-clic/backend/tests/conftest.py
+--- sqlserver/backend/tests/conftest.py	2026-11-14 00:01:42.205919389 -0300
++++ sqlite/backend/tests/conftest.py	2026-11-14 07:22:47.735791802 -0300
+@@ -1,6 +1,7 @@
+ import pytest
+ 
+ from app import create_app
++from app.banco import criar_banco
+ from app.extensions import db
+ from app.security import zerar_tentativas
+ 
+@@ -18,10 +19,10 @@
+         }
+     )
+     with aplicacao.app_context():
+-        db.create_all()
++        # Mesmo schema e triggers de database/ (sem os dados de exemplo): os testes exercitam os triggers de verdade.
++        criar_banco(com_dados=False)
+         yield aplicacao
+         db.session.remove()
+-        db.drop_all()
+ 
+ 
+ @pytest.fixture
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/tests/test_api.py sabor-clic/backend/tests/test_api.py
+--- sqlserver/backend/tests/test_api.py	2026-11-14 00:01:42.207706691 -0300
++++ sqlite/backend/tests/test_api.py	2026-11-14 07:22:47.736453700 -0300
+@@ -1,15 +1,25 @@
+ from datetime import datetime, timedelta
+ from decimal import Decimal
+ 
++import pytest
++from sqlalchemy.exc import DBAPIError
++
++from app.banco import criar_banco
+ from app.extensions import db
+ from app.models import (
+     Administrador,
++    Agendamento,
+     Bancada,
+     Cliente,
+     Cozinheiro,
++    FichaTecnica,
+     Ingrediente,
++    ItemPedido,
++    Pedido,
++    Prato,
+     Usuario,
+ )
++from app.services.erros import traduzir_erro_do_banco
+ 
+ SENHA = "SenhaSegura123"
+ 
+@@ -509,3 +519,108 @@
+     outro = login(client, "outro@example.com")
+     resposta = client.patch(f"/api/agendamentos/{criado['id']}/cancelar", headers={"X-CSRF-Token": outro})
+     assert resposta.status_code == 404
++
++
++# ----------------------------- triggers do SQLite (database/20_triggers.sql) -----------------------------
++def _estoque(app, ingrediente_id):
++    with app.app_context():
++        return db.session.get(Ingrediente, ingrediente_id).quantidade_estoque
++
++
++def test_trigger_baixa_estoque_e_recusa_pedido_sem_estoque(app, client):
++    prato_id = prato_como_admin(app, client)
++    with app.app_context():
++        arroz = Ingrediente(
++            nome="Arroz", unidade_medida="kg", quantidade_estoque=Decimal("1.000"), estoque_minimo=Decimal("0")
++        )
++        db.session.add(arroz)
++        db.session.flush()
++        db.session.add(
++            FichaTecnica(id_prato=prato_id, id_ingrediente=arroz.id_ingrediente, quantidade_utilizada=Decimal("0.400"))
++        )
++        db.session.commit()
++        arroz_id = arroz.id_ingrediente
++
++    cadastrar_cliente(client)
++    token = login(client, "cliente@example.com")
++    cabecalho = {"X-CSRF-Token": token}
++
++    aceito = client.post("/api/pedidos", json={"itens": [{"prato_id": prato_id, "quantidade": 2}]}, headers=cabecalho)
++    assert aceito.status_code == 201
++    assert _estoque(app, arroz_id) == Decimal("0.200")  # 1.000 - 2 x 0.400
++
++    recusado = client.post("/api/pedidos", json={"itens": [{"prato_id": prato_id, "quantidade": 1}]}, headers=cabecalho)
++    assert recusado.status_code == 409
++    assert recusado.get_json()["codigo"] == "ESTOQUE_INSUFICIENTE"
++    assert _estoque(app, arroz_id) == Decimal("0.200")  # nada foi baixado
++    assert len(client.get("/api/pedidos/meus").get_json()["dados"]) == 1  # pedido recusado não ficou gravado
++
++
++def test_trigger_recalcula_total_do_pedido(app, client):
++    prato_id = prato_como_admin(app, client)
++    cliente_id = criar_usuario_papel(app, "cliente", "dono@example.com")
++    with app.app_context():
++        pedido = Pedido(id_usuario_cliente=cliente_id, valor_total=Decimal("0.00"))
++        pedido.itens.append(ItemPedido(id_prato=prato_id, quantidade=2, preco_unitario=Decimal("10.00")))
++        db.session.add(pedido)
++        db.session.commit()
++        pedido_id = pedido.id_pedido
++
++        pedido.itens[0].quantidade = 5
++        db.session.commit()
++
++    with app.app_context():
++        assert db.session.get(Pedido, pedido_id).valor_total == Decimal("50.00")
++
++
++def test_trigger_barra_agendamento_sobreposto_mesmo_sem_a_verificacao_do_python(app):
++    bancada_id = _bancada(app)
++    cliente_id = criar_usuario_papel(app, "cliente", "dono@example.com")
++    inicio = datetime.now() + timedelta(days=2)
++
++    with app.app_context():
++        db.session.add(
++            Agendamento(
++                id_usuario_cliente=cliente_id,
++                id_bancada=bancada_id,
++                data_hora_inicio=inicio,
++                data_hora_fim=inicio + timedelta(hours=3),
++            )
++        )
++        db.session.commit()
++
++        db.session.add(
++            Agendamento(
++                id_usuario_cliente=cliente_id,
++                id_bancada=bancada_id,
++                data_hora_inicio=inicio + timedelta(hours=1),
++                data_hora_fim=inicio + timedelta(hours=4),
++            )
++        )
++        with pytest.raises(DBAPIError) as erro:
++            db.session.commit()
++        db.session.rollback()
++
++        assert traduzir_erro_do_banco(erro.value).codigo == "CONFLITO_HORARIO"
++
++        # reserva encostada (começa quando a outra termina) é permitida
++        db.session.add(
++            Agendamento(
++                id_usuario_cliente=cliente_id,
++                id_bancada=bancada_id,
++                data_hora_inicio=inicio + timedelta(hours=3),
++                data_hora_fim=inicio + timedelta(hours=5),
++            )
++        )
++        db.session.commit()
++
++
++def test_banco_com_dados_de_exemplo_permite_login_e_lista_33_pratos(app, client):
++    criar_banco(com_dados=True)
++    assert len(client.get("/api/menu").get_json()["dados"]) == 33
++    login(client, "bruno.cliente@saborclic.com", senha="Senha@123")
++    assert len(client.get("/api/pedidos/meus").get_json()["dados"]) == 4
++    with app.app_context():
++        # e-mail sem diferenciar maiúsculas (COLLATE NOCASE no SQLite)
++        assert Usuario.query.filter_by(email="ANA.ADMIN@SABORCLIC.COM").first() is not None
++        assert Prato.query.count() == 33
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/backend/tests/test_servicos.py sabor-clic/backend/tests/test_servicos.py
+--- sqlserver/backend/tests/test_servicos.py	2026-11-14 00:01:42.208688836 -0300
++++ sqlite/backend/tests/test_servicos.py	2026-11-14 07:22:47.736112673 -0300
+@@ -1,30 +1,35 @@
+ """Testes que não precisam de banco: validação e tradução dos erros dos triggers."""
++import sqlite3
++
+ from sqlalchemy.exc import DBAPIError
+ 
+ from app.services.erros import traduzir_erro_do_banco
+ from app.services.validacao_service import validar_itens_pedido, validar_reposicao
+ 
+ 
+-def test_traduz_erro_50001_para_409():
+-    original = Exception(
+-        "[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]"
+-        "Estoque insuficiente do ingrediente: Arroz (50001) (SQLExecDirectW)"
++def _erro_do_banco(mensagem):
++    return DBAPIError("INSERT ...", {}, sqlite3.IntegrityError(mensagem))
++
++
++def test_traduz_erro_de_estoque_para_409():
++    traduzido = traduzir_erro_do_banco(
++        _erro_do_banco("Estoque insuficiente de ingrediente para este pedido.")
+     )
+-    erro = DBAPIError("INSERT ...", {}, original)
+-    traduzido = traduzir_erro_do_banco(erro)
+     assert traduzido.status == 409
+     assert traduzido.codigo == "ESTOQUE_INSUFICIENTE"
+-    assert traduzido.mensagem == "Estoque insuficiente do ingrediente: Arroz"
++    assert traduzido.mensagem == "Estoque insuficiente de ingrediente para este pedido."
+ 
+ 
+-def test_traduz_erro_50002_para_409():
+-    original = Exception("[SQL Server]Conflito de horário na bancada (50002)")
+-    traduzido = traduzir_erro_do_banco(DBAPIError("INSERT ...", {}, original))
++def test_traduz_conflito_de_horario_para_409():
++    traduzido = traduzir_erro_do_banco(
++        _erro_do_banco("Conflito de horário: a bancada já está reservada neste período.")
++    )
++    assert traduzido.status == 409
+     assert traduzido.codigo == "CONFLITO_HORARIO"
+ 
+ 
+ def test_erro_comum_do_banco_nao_e_traduzido():
+-    assert traduzir_erro_do_banco(DBAPIError("SELECT", {}, Exception("outro erro"))) is None
++    assert traduzir_erro_do_banco(_erro_do_banco("UNIQUE constraint failed: Usuario.email")) is None
+     assert traduzir_erro_do_banco(ValueError("x")) is None
+ 
+ 
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/database/01_modelo_fisico.sql sabor-clic/database/01_modelo_fisico.sql
+--- sqlserver/database/01_modelo_fisico.sql	2026-11-14 07:02:55.748066888 -0300
++++ sqlite/database/01_modelo_fisico.sql	2026-11-14 07:20:50.980485748 -0300
+@@ -1,22 +1,24 @@
+-﻿/* =====================================================================
+-   SABOR & CLIC — MODELO FÍSICO (SQL Server / T-SQL)
++/* =====================================================================
++   SABOR & CLIC — MODELO FÍSICO (SQLite)
+    Projeto Integrador — Parte 2 (4º Bimestre)
+    Escopo: 11 tabelas = 9 entidades da Parte 1 + INGREDIENTE e
+    FICHA_TECNICA (controle de estoque), com restrições e índices.
+-   Requer SQL Server 2017 ou superior.
+-   ===================================================================== */
++   Requer SQLite 3.25+ (funções de janela nos relatórios).
+ 
+-IF DB_ID('SaborClic') IS NULL
+-    CREATE DATABASE SaborClic;
+-GO
++   Diferenças em relação à versão SQL Server:
++     - não existe CREATE DATABASE: o banco é o próprio arquivo .db;
++     - INT IDENTITY(1,1)  ->  INTEGER PRIMARY KEY AUTOINCREMENT;
++     - NVARCHAR(n)        ->  TEXT (o tamanho não é imposto pelo SQLite);
++     - BIT                ->  INTEGER com CHECK (x IN (0,1));
++     - DATETIME2          ->  TEXT no formato ISO 'AAAA-MM-DD HH:MM:SS';
++     - texto é sensível a maiúsculas: e-mail e nomes únicos usam COLLATE NOCASE
++       (no SQL Server a collation padrão já ignora maiúsculas);
++     - as chaves estrangeiras só valem com PRAGMA foreign_keys = ON
++       (a aplicação liga esse PRAGMA a cada conexão).
++   ===================================================================== */
+ 
+-USE SaborClic;
+-GO
++PRAGMA foreign_keys = OFF;
+ 
+-/* ---------------------------------------------------------------------
+-   DROP em ordem de dependência (filhas antes das pais).
+-   Os triggers são removidos junto com as tabelas.
+-   --------------------------------------------------------------------- */
+ DROP TABLE IF EXISTS Agendamento;
+ DROP TABLE IF EXISTS Item_Pedido;
+ DROP TABLE IF EXISTS Pedido;
+@@ -28,159 +30,148 @@
+ DROP TABLE IF EXISTS Cliente;
+ DROP TABLE IF EXISTS Administrador;
+ DROP TABLE IF EXISTS Usuario;
+-GO
++
++PRAGMA foreign_keys = ON;
+ 
+ /* =====================================================================
+    1. USUARIO (superclasse — especializada em Administrador/Cliente/Cozinheiro)
+    ===================================================================== */
+ CREATE TABLE Usuario (
+-    id_usuario      INT IDENTITY(1,1) PRIMARY KEY,
+-    nome            NVARCHAR(150)   NOT NULL,
+-    email           NVARCHAR(150)   NOT NULL UNIQUE,
+-    senha_hash      NVARCHAR(255)   NOT NULL,
+-    data_cadastro   DATETIME2       NOT NULL DEFAULT SYSDATETIME(),
+-    tipo_usuario    NVARCHAR(20)    NOT NULL
+-        CHECK (tipo_usuario IN (N'administrador', N'cliente', N'cozinheiro')),
+-    ativo           BIT             NOT NULL DEFAULT 1   -- 0 = conta desativada (não consegue entrar)
++    id_usuario      INTEGER PRIMARY KEY AUTOINCREMENT,
++    nome            TEXT    NOT NULL,
++    email           TEXT    NOT NULL UNIQUE COLLATE NOCASE,
++    senha_hash      TEXT    NOT NULL,
++    data_cadastro   TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
++    tipo_usuario    TEXT    NOT NULL
++        CHECK (tipo_usuario IN ('administrador', 'cliente', 'cozinheiro')),
++    ativo           INTEGER NOT NULL DEFAULT 1 CHECK (ativo IN (0, 1))
+ );
+-GO
+ 
+ /* ---- Especializações de Usuario (1:1, PK também é FK) ---- */
+ CREATE TABLE Administrador (
+-    id_usuario      INT PRIMARY KEY
++    id_usuario      INTEGER PRIMARY KEY
+         REFERENCES Usuario(id_usuario),
+-    nivel_permissao NVARCHAR(30)    NOT NULL
++    nivel_permissao TEXT    NOT NULL
+ );
+-GO
+ 
+ CREATE TABLE Cliente (
+-    id_usuario        INT PRIMARY KEY
++    id_usuario        INTEGER PRIMARY KEY
+         REFERENCES Usuario(id_usuario),
+-    endereco_entrega  NVARCHAR(255) NULL,
+-    telefone          NVARCHAR(20)  NULL
++    endereco_entrega  TEXT NULL,
++    telefone          TEXT NULL
+ );
+-GO
+ 
+ CREATE TABLE Cozinheiro (
+-    id_usuario      INT PRIMARY KEY
++    id_usuario      INTEGER PRIMARY KEY
+         REFERENCES Usuario(id_usuario),
+-    turno_trabalho  NVARCHAR(20)    NOT NULL
+-        CHECK (turno_trabalho IN (N'Manhã', N'Tarde', N'Noite')),
+-    especialidade   NVARCHAR(100)   NULL
++    turno_trabalho  TEXT    NOT NULL
++        CHECK (turno_trabalho IN ('Manhã', 'Tarde', 'Noite')),
++    especialidade   TEXT    NULL
+ );
+-GO
+ 
+ /* =====================================================================
+    2. PRATO (gerenciado por um Administrador)
+    ===================================================================== */
+ CREATE TABLE Prato (
+-    id_prato          INT IDENTITY(1,1) PRIMARY KEY,
+-    nome              NVARCHAR(150)  NOT NULL,
+-    descricao         NVARCHAR(500)  NULL,
+-    preco             DECIMAL(10,2)  NOT NULL CHECK (preco >= 0),
+-    categoria         NVARCHAR(50)   NULL,
+-    disponivel        BIT            NOT NULL DEFAULT 1,
+-    imagem_url        NVARCHAR(500)  NULL,
+-    id_usuario_admin  INT            NOT NULL
++    id_prato          INTEGER PRIMARY KEY AUTOINCREMENT,
++    nome              TEXT          NOT NULL,
++    descricao         TEXT          NULL,
++    preco             DECIMAL(10,2) NOT NULL CHECK (preco >= 0),
++    categoria         TEXT          NULL,
++    disponivel        INTEGER       NOT NULL DEFAULT 1 CHECK (disponivel IN (0, 1)),
++    imagem_url        TEXT          NULL,
++    id_usuario_admin  INTEGER       NOT NULL
+         REFERENCES Administrador(id_usuario)
+ );
+-GO
+ 
+ /* =====================================================================
+    3. BANCADA (espaço/dark kitchen disponível para locação)
+    ===================================================================== */
+ CREATE TABLE Bancada (
+-    id_bancada      INT IDENTITY(1,1) PRIMARY KEY,
+-    identificacao   NVARCHAR(50)   NOT NULL UNIQUE,
+-    descricao       NVARCHAR(255)  NULL,
+-    capacidade      INT            NULL CHECK (capacidade > 0),
+-    equipamentos    NVARCHAR(255)  NULL,
+-    valor_hora      DECIMAL(10,2)  NOT NULL CHECK (valor_hora >= 0),
+-    status          NVARCHAR(20)   NOT NULL DEFAULT N'Disponível'
+-        CHECK (status IN (N'Disponível', N'Ocupada', N'Manutenção'))
++    id_bancada      INTEGER PRIMARY KEY AUTOINCREMENT,
++    identificacao   TEXT          NOT NULL UNIQUE COLLATE NOCASE,
++    descricao       TEXT          NULL,
++    capacidade      INTEGER       NULL CHECK (capacidade > 0),
++    equipamentos    TEXT          NULL,
++    valor_hora      DECIMAL(10,2) NOT NULL CHECK (valor_hora >= 0),
++    status          TEXT          NOT NULL DEFAULT 'Disponível'
++        CHECK (status IN ('Disponível', 'Ocupada', 'Manutenção'))
+ );
+-GO
+ 
+ /* =====================================================================
+    4. INGREDIENTE (estoque da cozinha)
+    ===================================================================== */
+ CREATE TABLE Ingrediente (
+-    id_ingrediente      INT IDENTITY(1,1) PRIMARY KEY,
+-    nome                NVARCHAR(150)  NOT NULL UNIQUE,
+-    unidade_medida      NVARCHAR(10)   NOT NULL,
+-    quantidade_estoque  DECIMAL(10,3)  NOT NULL DEFAULT 0
++    id_ingrediente      INTEGER PRIMARY KEY AUTOINCREMENT,
++    nome                TEXT          NOT NULL UNIQUE COLLATE NOCASE,
++    unidade_medida      TEXT          NOT NULL,
++    quantidade_estoque  DECIMAL(10,3) NOT NULL DEFAULT 0
+         CHECK (quantidade_estoque >= 0),
+-    estoque_minimo      DECIMAL(10,3)  NOT NULL DEFAULT 0
++    estoque_minimo      DECIMAL(10,3) NOT NULL DEFAULT 0
+         CHECK (estoque_minimo >= 0)
+ );
+-GO
+ 
+ /* =====================================================================
+    5. FICHA_TECNICA (receita: quanto de cada ingrediente cada prato consome)
+-      Entidade associativa Prato x Ingrediente, PK composta.
+    ===================================================================== */
+ CREATE TABLE Ficha_Tecnica (
+-    id_prato             INT            NOT NULL
++    id_prato             INTEGER       NOT NULL
+         REFERENCES Prato(id_prato),
+-    id_ingrediente       INT            NOT NULL
++    id_ingrediente       INTEGER       NOT NULL
+         REFERENCES Ingrediente(id_ingrediente),
+-    quantidade_utilizada DECIMAL(10,3)  NOT NULL
++    quantidade_utilizada DECIMAL(10,3) NOT NULL
+         CHECK (quantidade_utilizada > 0),
+     PRIMARY KEY (id_prato, id_ingrediente)
+ );
+-GO
+ 
+ /* =====================================================================
+    6. PEDIDO (Cliente realiza; Cozinheiro prepara — opcional até entrar na fila)
+    ===================================================================== */
+ CREATE TABLE Pedido (
+-    id_pedido               INT IDENTITY(1,1) PRIMARY KEY,
+-    id_usuario_cliente      INT            NOT NULL
++    id_pedido               INTEGER PRIMARY KEY AUTOINCREMENT,
++    id_usuario_cliente      INTEGER       NOT NULL
+         REFERENCES Cliente(id_usuario),
+-    id_usuario_cozinheiro   INT            NULL
++    id_usuario_cozinheiro   INTEGER       NULL
+         REFERENCES Cozinheiro(id_usuario),
+-    data_hora_pedido        DATETIME2      NOT NULL DEFAULT SYSDATETIME(),
+-    status                  NVARCHAR(20)   NOT NULL DEFAULT N'Aguardando'
+-        CHECK (status IN (N'Aguardando', N'Iniciando Preparo', N'Em Preparo', N'Pronto para Entrega')),
+-    valor_total             DECIMAL(10,2)  NOT NULL DEFAULT 0 CHECK (valor_total >= 0),
+-    observacoes             NVARCHAR(300)  NULL
++    data_hora_pedido        TEXT          NOT NULL DEFAULT (datetime('now', 'localtime')),
++    status                  TEXT          NOT NULL DEFAULT 'Aguardando'
++        CHECK (status IN ('Aguardando', 'Iniciando Preparo', 'Em Preparo', 'Pronto para Entrega')),
++    valor_total             DECIMAL(10,2) NOT NULL DEFAULT 0 CHECK (valor_total >= 0),
++    observacoes             TEXT          NULL
+ );
+-GO
+ 
+ /* =====================================================================
+    7. ITEM_PEDIDO (entidade associativa Pedido x Prato — todo pedido tem >=1 item)
+    ===================================================================== */
+ CREATE TABLE Item_Pedido (
+-    id_item_pedido          INT IDENTITY(1,1) PRIMARY KEY,
+-    id_pedido               INT            NOT NULL
++    id_item_pedido          INTEGER PRIMARY KEY AUTOINCREMENT,
++    id_pedido               INTEGER       NOT NULL
+         REFERENCES Pedido(id_pedido),
+-    id_prato                INT            NOT NULL
++    id_prato                INTEGER       NOT NULL
+         REFERENCES Prato(id_prato),
+-    quantidade              INT            NOT NULL CHECK (quantidade > 0),
+-    preco_unitario          DECIMAL(10,2)  NOT NULL CHECK (preco_unitario >= 0),
+-    tempo_estimado_preparo  INT            NULL CHECK (tempo_estimado_preparo > 0)
++    quantidade              INTEGER       NOT NULL CHECK (quantidade > 0),
++    preco_unitario          DECIMAL(10,2) NOT NULL CHECK (preco_unitario >= 0),
++    tempo_estimado_preparo  INTEGER       NULL CHECK (tempo_estimado_preparo > 0)
+ );
+-GO
+ 
+ /* =====================================================================
+    8. AGENDAMENTO (entidade associativa Cliente x Bancada)
+    ===================================================================== */
+ CREATE TABLE Agendamento (
+-    id_agendamento      INT IDENTITY(1,1) PRIMARY KEY,
+-    id_usuario_cliente  INT            NOT NULL
++    id_agendamento      INTEGER PRIMARY KEY AUTOINCREMENT,
++    id_usuario_cliente  INTEGER NOT NULL
+         REFERENCES Cliente(id_usuario),
+-    id_bancada          INT            NOT NULL
++    id_bancada          INTEGER NOT NULL
+         REFERENCES Bancada(id_bancada),
+-    data_hora_inicio    DATETIME2      NOT NULL,
+-    data_hora_fim       DATETIME2      NOT NULL,
+-    status              NVARCHAR(20)   NOT NULL DEFAULT N'Confirmado'
+-        CHECK (status IN (N'Confirmado', N'Cancelado', N'Concluído')),
++    data_hora_inicio    TEXT    NOT NULL,
++    data_hora_fim       TEXT    NOT NULL,
++    status              TEXT    NOT NULL DEFAULT 'Confirmado'
++        CHECK (status IN ('Confirmado', 'Cancelado', 'Concluído')),
+     CHECK (data_hora_fim > data_hora_inicio)
+ );
+-GO
+ 
+ /* =====================================================================
+-   9. ÍNDICES (colunas de FK e de filtro usadas nos relatórios e triggers)
++   9. ÍNDICES
+    ===================================================================== */
+ CREATE INDEX ix_prato_admin           ON Prato (id_usuario_admin);
+ CREATE INDEX ix_pedido_cliente        ON Pedido (id_usuario_cliente);
+@@ -191,4 +182,3 @@
+ CREATE INDEX ix_ficha_ingrediente     ON Ficha_Tecnica (id_ingrediente);
+ CREATE INDEX ix_agendamento_bancada   ON Agendamento (id_bancada, data_hora_inicio, data_hora_fim);
+ CREATE INDEX ix_agendamento_cliente   ON Agendamento (id_usuario_cliente);
+-GO
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/database/02_insercoes_basicas.sql sabor-clic/database/02_insercoes_basicas.sql
+--- sqlserver/database/02_insercoes_basicas.sql	2026-11-14 07:02:50.159874408 -0300
++++ sqlite/database/02_insercoes_basicas.sql	2026-11-14 07:21:30.659817904 -0300
+@@ -1,5 +1,5 @@
+-﻿/* =====================================================================
+-   SABOR & CLIC — INSERÇÕES BÁSICAS (SQL Server / T-SQL)
++/* =====================================================================
++   SABOR & CLIC — INSERÇÕES BÁSICAS (SQLite)
+    Dados mínimos para o sistema funcionar e para exercitar os relatórios.
+    Execute DEPOIS do 01_modelo_fisico.sql (que recria todas as tabelas).
+ 
+@@ -9,55 +9,54 @@
+ 
+    Observação sobre o estoque: as quantidades de INGREDIENTE representam
+    o saldo atual, já descontados os pedidos de exemplo abaixo. Esses
+-   pedidos são anteriores à criação do trigger (20_triggers.sql), por isso
+-   não geram baixa automática; a partir do trigger, todo novo item de
++   pedidos são anteriores à criação dos triggers (20_triggers.sql), por isso
++   não geram baixa automática; a partir dos triggers, todo novo item de
+    pedido baixa o estoque sozinho.
+-   ===================================================================== */
+-
+-USE SaborClic;
+-GO
+ 
+-SET NOCOUNT ON;
++   Diferenças em relação ao SQL Server: sem prefixo N'...', sem DECLARE,
++   SCOPE_IDENTITY nem tabela variável (os ids dos pedidos são fixos 1 a 6,
++   pois a tabela acabou de ser recriada) e VALUES virou CTE (WITH ... AS).
++   ===================================================================== */
+ 
+ /* ---------------------------------------------------------------------
+    Usuários (1 administrador, 2 clientes, 2 cozinheiros)
+    --------------------------------------------------------------------- */
+ INSERT INTO Usuario (nome, email, senha_hash, tipo_usuario) VALUES
+-    (N'Ana Souza',      N'ana.admin@saborclic.com',
+-     N'scrypt:32768:8:1$dO6NJcksBJljTlAV$a6c55713f3d3fde6bc42daf871fe4f51cae76b4c1afd5250264815442b6c7f2f7d132b065484dc73f7ea6fea193493b78a1757a317a1843034baf196c85c5a3b',
+-     N'administrador'),
+-    (N'Bruno Lima',     N'bruno.cliente@saborclic.com',
+-     N'scrypt:32768:8:1$KO6wZ2eU9Fx82Mr6$130c37839174873e18ce947d039c8e917ef0eeb06b03c0938d29186151a42d7407e0403d2e6635a39f3e012b6bc25ceac94308575e5c5e98fd964d56fe18e139',
+-     N'cliente'),
+-    (N'Daniela Costa',  N'daniela.cliente@saborclic.com',
+-     N'scrypt:32768:8:1$azoA3RoCxdc8nROe$4c2e890f40a7a5f4e9988a7c400e4dcae3cd0953be0255bdaf60d6b19ec38a130589df41b1035cdcc8ab4557ea15d27ea726fd234b12011278492dc393f80149',
+-     N'cliente'),
+-    (N'Carla Nunes',    N'carla.cozinha@saborclic.com',
+-     N'scrypt:32768:8:1$OjHKBI2ZbTDcZJfJ$f89949e2ff2b07777b7c25f9ba2d474cbf5f139019aea308dde0228ade203793de069891b7c139f953dead3fb04700bd33eb059d36c53232fab23077bf80b14f',
+-     N'cozinheiro'),
+-    (N'Marcos Pereira', N'marcos.cozinha@saborclic.com',
+-     N'scrypt:32768:8:1$La3Syrjx7MtTEIgJ$45d1842e4bff1356d64393ee44fdf2bc625e24fc4f7fc2c5bba89314fc966a066e0700c6a8a572afb7b5d305f45b672f5ea22b4b146680d5f3fd874cc196fdb5',
+-     N'cozinheiro');
++    ('Ana Souza',      'ana.admin@saborclic.com',
++     'scrypt:32768:8:1$dO6NJcksBJljTlAV$a6c55713f3d3fde6bc42daf871fe4f51cae76b4c1afd5250264815442b6c7f2f7d132b065484dc73f7ea6fea193493b78a1757a317a1843034baf196c85c5a3b',
++     'administrador'),
++    ('Bruno Lima',     'bruno.cliente@saborclic.com',
++     'scrypt:32768:8:1$KO6wZ2eU9Fx82Mr6$130c37839174873e18ce947d039c8e917ef0eeb06b03c0938d29186151a42d7407e0403d2e6635a39f3e012b6bc25ceac94308575e5c5e98fd964d56fe18e139',
++     'cliente'),
++    ('Daniela Costa',  'daniela.cliente@saborclic.com',
++     'scrypt:32768:8:1$azoA3RoCxdc8nROe$4c2e890f40a7a5f4e9988a7c400e4dcae3cd0953be0255bdaf60d6b19ec38a130589df41b1035cdcc8ab4557ea15d27ea726fd234b12011278492dc393f80149',
++     'cliente'),
++    ('Carla Nunes',    'carla.cozinha@saborclic.com',
++     'scrypt:32768:8:1$OjHKBI2ZbTDcZJfJ$f89949e2ff2b07777b7c25f9ba2d474cbf5f139019aea308dde0228ade203793de069891b7c139f953dead3fb04700bd33eb059d36c53232fab23077bf80b14f',
++     'cozinheiro'),
++    ('Marcos Pereira', 'marcos.cozinha@saborclic.com',
++     'scrypt:32768:8:1$La3Syrjx7MtTEIgJ$45d1842e4bff1356d64393ee44fdf2bc625e24fc4f7fc2c5bba89314fc966a066e0700c6a8a572afb7b5d305f45b672f5ea22b4b146680d5f3fd874cc196fdb5',
++     'cozinheiro');
+ 
+ INSERT INTO Administrador (id_usuario, nivel_permissao)
+-SELECT id_usuario, N'gestor_catalogo'
+-FROM Usuario WHERE email = N'ana.admin@saborclic.com';
++SELECT id_usuario, 'gestor_catalogo'
++FROM Usuario WHERE email = 'ana.admin@saborclic.com';
+ 
+ INSERT INTO Cliente (id_usuario, endereco_entrega, telefone)
+-SELECT id_usuario, N'Rua das Flores, 123 - São Paulo/SP', N'(11) 90000-0001'
+-FROM Usuario WHERE email = N'bruno.cliente@saborclic.com';
++SELECT id_usuario, 'Rua das Flores, 123 - São Paulo/SP', '(11) 90000-0001'
++FROM Usuario WHERE email = 'bruno.cliente@saborclic.com';
+ 
+ INSERT INTO Cliente (id_usuario, endereco_entrega, telefone)
+-SELECT id_usuario, N'Av. Paulista, 1500 - São Paulo/SP', N'(11) 90000-0002'
+-FROM Usuario WHERE email = N'daniela.cliente@saborclic.com';
++SELECT id_usuario, 'Av. Paulista, 1500 - São Paulo/SP', '(11) 90000-0002'
++FROM Usuario WHERE email = 'daniela.cliente@saborclic.com';
+ 
+ INSERT INTO Cozinheiro (id_usuario, turno_trabalho, especialidade)
+-SELECT id_usuario, N'Manhã', N'Massas'
+-FROM Usuario WHERE email = N'carla.cozinha@saborclic.com';
++SELECT id_usuario, 'Manhã', 'Massas'
++FROM Usuario WHERE email = 'carla.cozinha@saborclic.com';
+ 
+ INSERT INTO Cozinheiro (id_usuario, turno_trabalho, especialidade)
+-SELECT id_usuario, N'Tarde', N'Grelhados'
+-FROM Usuario WHERE email = N'marcos.cozinha@saborclic.com';
++SELECT id_usuario, 'Tarde', 'Grelhados'
++FROM Usuario WHERE email = 'marcos.cozinha@saborclic.com';
+ 
+ /* ---------------------------------------------------------------------
+    Cardápio: 31 pratos do protótipo HTML (ids 1 a 31, na mesma ordem e com os
+@@ -65,50 +64,48 @@
+    que existem desde a Parte 1. Só estes três pratos têm ficha técnica; os
+    demais não baixam estoque ao serem pedidos.
+    --------------------------------------------------------------------- */
+-DECLARE @admin INT = (SELECT id_usuario FROM Usuario WHERE email = N'ana.admin@saborclic.com');
+-
+ INSERT INTO Prato (nome, descricao, preco, categoria, disponivel, imagem_url, id_usuario_admin) VALUES
+-    (N'X-Burguer', N'Pão brioche, hambúrguer artesanal, queijo e molho da casa.', 24.90, N'Lanches', 1, N'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'X-Bacon', N'Hambúrguer, queijo derretido, bacon crocante e maionese especial.', 29.90, N'Lanches', 1, N'https://images.unsplash.com/photo-1551782450-a2132b4ba21d?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Cheeseburger Duplo', N'Dois discos de carne, cheddar, cebola e pão macio.', 34.90, N'Lanches', 1, N'https://images.unsplash.com/photo-1571091718767-18b5b1457add?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Hot Dog Especial', N'Pão, salsicha, purê cremoso, milho, batata palha e molhos.', 19.90, N'Lanches', 1, N'https://images.unsplash.com/photo-1612392062798-2dbaa8f6b3f0?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Chicken Burger', N'Frango empanado crocante, alface e molho cremoso.', 27.90, N'Lanches', 1, N'https://images.unsplash.com/photo-1606755962773-d324e0a13086?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Pizza Margherita', N'Molho de tomate, muçarela, tomate fresco e manjericão.', 42.90, N'Pizzas', 1, N'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Pizza Calabresa', N'Calabresa fatiada, cebola, muçarela e orégano.', 44.90, N'Pizzas', 1, N'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Pizza Quatro Queijos', N'Uma combinação cremosa de quatro queijos selecionados.', 49.90, N'Pizzas', 1, N'https://images.unsplash.com/photo-1593560708920-61dd98c46a4e?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Pizza Pepperoni', N'Muçarela, pepperoni e molho de tomate da casa.', 48.90, N'Pizzas', 1, N'https://images.unsplash.com/photo-1628840042765-356cda07504e?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Lasanha à Bolonhesa', N'Camadas de massa, molho bolonhesa e queijo gratinado.', 36.90, N'Massas', 1, N'https://images.unsplash.com/photo-1574894709920-11b28e7367e3?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Espaguete ao Sugo', N'Espaguete com molho de tomate, manjericão e parmesão.', 29.90, N'Massas', 1, N'https://images.unsplash.com/photo-1473093295043-cdd812d0e601?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Penne ao Molho Branco', N'Penne envolvido em molho branco cremoso e parmesão.', 34.90, N'Massas', 1, N'https://images.unsplash.com/photo-1555949258-eb67b1ef0ceb?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Fettuccine ao Pesto', N'Massa delicada com pesto de manjericão e parmesão.', 37.90, N'Massas', 1, N'https://images.unsplash.com/photo-1551183053-bf91a1d81141?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Batata Frita', N'Batatas douradas e crocantes, com sal na medida.', 18.90, N'Porções', 1, N'https://images.unsplash.com/photo-1573080496219-bb080dd4f877?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Onion Rings', N'Anéis de cebola empanados e crocantes.', 22.90, N'Porções', 1, N'https://images.unsplash.com/photo-1639024471283-03518883512d?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Frango Crocante', N'Tiras de frango empanadas, acompanhadas de molho especial.', 32.90, N'Porções', 1, N'https://images.unsplash.com/photo-1562967914-608f82629710?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Salada Caesar', N'Alface, frango grelhado, croutons e molho caesar.', 27.90, N'Saladas', 1, N'https://images.unsplash.com/photo-1540420773420-3366772f4999?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Salada Tropical', N'Folhas frescas, tomate, cenoura e frutas da estação.', 25.90, N'Saladas', 1, N'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Brownie com Sorvete', N'Brownie de chocolate servido com sorvete cremoso.', 19.90, N'Sobremesas', 1, N'https://images.unsplash.com/photo-1564355808539-22fda35bed7e?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Cheesecake', N'Cheesecake cremoso com cobertura de frutas vermelhas.', 18.90, N'Sobremesas', 1, N'https://images.unsplash.com/photo-1533134242443-d4fd215305ad?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Pudim', N'Pudim tradicional com calda de caramelo.', 12.90, N'Sobremesas', 1, N'https://images.unsplash.com/photo-1511911063855-2bf39afa5b2e?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Refrigerante Lata', N'Lata gelada de refrigerante 350 ml.', 6.90, N'Bebidas', 1, N'https://images.unsplash.com/photo-1581636625402-29b2a704ef13?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Suco de Laranja', N'Suco de laranja preparado na hora, 300 ml.', 9.90, N'Bebidas', 1, N'https://images.unsplash.com/photo-1600271886742-f049cd451bba?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Limonada', N'Limonada refrescante, feita com limões frescos.', 8.90, N'Bebidas', 1, N'https://images.unsplash.com/photo-1513558161293-cdaf765edfd4?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Milk-shake de Chocolate', N'Milk-shake gelado e cremoso de chocolate.', 17.90, N'Bebidas', 1, N'https://images.unsplash.com/photo-1572490122747-3968b75cc699?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Café Gelado', N'Café gelado com leite e toque de baunilha.', 13.90, N'Bebidas', 1, N'https://images.unsplash.com/photo-1517701604599-bb29b565090c?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'X-Salada', N'Hambúrguer artesanal, queijo, alface, tomate e maionese da casa.', 27.90, N'Lanches', 1, N'https://images.unsplash.com/photo-1553979459-d2229ba7433a?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'X-Egg', N'Pão brioche, hambúrguer, queijo, ovo e salada fresca.', 28.90, N'Lanches', 1, N'https://images.unsplash.com/photo-1561758033-d89a9ad46330?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Burger Vegetariano', N'Hambúrguer de grão-de-bico, queijo, alface e molho especial.', 28.90, N'Vegetarianos', 1, N'https://images.unsplash.com/photo-1520072959219-c595dc870360?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Pizza Vegetariana', N'Muçarela, abobrinha, tomate, champignon, cebola e azeitonas.', 46.90, N'Vegetarianos', 1, N'https://images.unsplash.com/photo-1571407970349-bc81e7e96d47?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Salada Verde', N'Mix de folhas, pepino, tomate-cereja, cenoura e molho cítrico.', 22.90, N'Vegetarianos', 1, N'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=900&q=85', @admin),
+-    (N'Marmita Executiva', N'Arroz, feijão, proteína e acompanhamento.', 24.90, N'Marmitas', 1, NULL, @admin),
+-    (N'Strogonoff de Frango', N'Frango ao molho cremoso com arroz e batata palha.', 29.90, N'Pratos principais', 1, NULL, @admin);
++    ('X-Burguer', 'Pão brioche, hambúrguer artesanal, queijo e molho da casa.', 24.90, 'Lanches', 1, 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('X-Bacon', 'Hambúrguer, queijo derretido, bacon crocante e maionese especial.', 29.90, 'Lanches', 1, 'https://images.unsplash.com/photo-1551782450-a2132b4ba21d?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Cheeseburger Duplo', 'Dois discos de carne, cheddar, cebola e pão macio.', 34.90, 'Lanches', 1, 'https://images.unsplash.com/photo-1571091718767-18b5b1457add?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Hot Dog Especial', 'Pão, salsicha, purê cremoso, milho, batata palha e molhos.', 19.90, 'Lanches', 1, 'https://images.unsplash.com/photo-1612392062798-2dbaa8f6b3f0?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Chicken Burger', 'Frango empanado crocante, alface e molho cremoso.', 27.90, 'Lanches', 1, 'https://images.unsplash.com/photo-1606755962773-d324e0a13086?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Pizza Margherita', 'Molho de tomate, muçarela, tomate fresco e manjericão.', 42.90, 'Pizzas', 1, 'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Pizza Calabresa', 'Calabresa fatiada, cebola, muçarela e orégano.', 44.90, 'Pizzas', 1, 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Pizza Quatro Queijos', 'Uma combinação cremosa de quatro queijos selecionados.', 49.90, 'Pizzas', 1, 'https://images.unsplash.com/photo-1593560708920-61dd98c46a4e?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Pizza Pepperoni', 'Muçarela, pepperoni e molho de tomate da casa.', 48.90, 'Pizzas', 1, 'https://images.unsplash.com/photo-1628840042765-356cda07504e?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Lasanha à Bolonhesa', 'Camadas de massa, molho bolonhesa e queijo gratinado.', 36.90, 'Massas', 1, 'https://images.unsplash.com/photo-1574894709920-11b28e7367e3?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Espaguete ao Sugo', 'Espaguete com molho de tomate, manjericão e parmesão.', 29.90, 'Massas', 1, 'https://images.unsplash.com/photo-1473093295043-cdd812d0e601?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Penne ao Molho Branco', 'Penne envolvido em molho branco cremoso e parmesão.', 34.90, 'Massas', 1, 'https://images.unsplash.com/photo-1555949258-eb67b1ef0ceb?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Fettuccine ao Pesto', 'Massa delicada com pesto de manjericão e parmesão.', 37.90, 'Massas', 1, 'https://images.unsplash.com/photo-1551183053-bf91a1d81141?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Batata Frita', 'Batatas douradas e crocantes, com sal na medida.', 18.90, 'Porções', 1, 'https://images.unsplash.com/photo-1573080496219-bb080dd4f877?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Onion Rings', 'Anéis de cebola empanados e crocantes.', 22.90, 'Porções', 1, 'https://images.unsplash.com/photo-1639024471283-03518883512d?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Frango Crocante', 'Tiras de frango empanadas, acompanhadas de molho especial.', 32.90, 'Porções', 1, 'https://images.unsplash.com/photo-1562967914-608f82629710?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Salada Caesar', 'Alface, frango grelhado, croutons e molho caesar.', 27.90, 'Saladas', 1, 'https://images.unsplash.com/photo-1540420773420-3366772f4999?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Salada Tropical', 'Folhas frescas, tomate, cenoura e frutas da estação.', 25.90, 'Saladas', 1, 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Brownie com Sorvete', 'Brownie de chocolate servido com sorvete cremoso.', 19.90, 'Sobremesas', 1, 'https://images.unsplash.com/photo-1564355808539-22fda35bed7e?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Cheesecake', 'Cheesecake cremoso com cobertura de frutas vermelhas.', 18.90, 'Sobremesas', 1, 'https://images.unsplash.com/photo-1533134242443-d4fd215305ad?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Pudim', 'Pudim tradicional com calda de caramelo.', 12.90, 'Sobremesas', 1, 'https://images.unsplash.com/photo-1511911063855-2bf39afa5b2e?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Refrigerante Lata', 'Lata gelada de refrigerante 350 ml.', 6.90, 'Bebidas', 1, 'https://images.unsplash.com/photo-1581636625402-29b2a704ef13?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Suco de Laranja', 'Suco de laranja preparado na hora, 300 ml.', 9.90, 'Bebidas', 1, 'https://images.unsplash.com/photo-1600271886742-f049cd451bba?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Limonada', 'Limonada refrescante, feita com limões frescos.', 8.90, 'Bebidas', 1, 'https://images.unsplash.com/photo-1513558161293-cdaf765edfd4?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Milk-shake de Chocolate', 'Milk-shake gelado e cremoso de chocolate.', 17.90, 'Bebidas', 1, 'https://images.unsplash.com/photo-1572490122747-3968b75cc699?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Café Gelado', 'Café gelado com leite e toque de baunilha.', 13.90, 'Bebidas', 1, 'https://images.unsplash.com/photo-1517701604599-bb29b565090c?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('X-Salada', 'Hambúrguer artesanal, queijo, alface, tomate e maionese da casa.', 27.90, 'Lanches', 1, 'https://images.unsplash.com/photo-1553979459-d2229ba7433a?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('X-Egg', 'Pão brioche, hambúrguer, queijo, ovo e salada fresca.', 28.90, 'Lanches', 1, 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Burger Vegetariano', 'Hambúrguer de grão-de-bico, queijo, alface e molho especial.', 28.90, 'Vegetarianos', 1, 'https://images.unsplash.com/photo-1520072959219-c595dc870360?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Pizza Vegetariana', 'Muçarela, abobrinha, tomate, champignon, cebola e azeitonas.', 46.90, 'Vegetarianos', 1, 'https://images.unsplash.com/photo-1571407970349-bc81e7e96d47?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Salada Verde', 'Mix de folhas, pepino, tomate-cereja, cenoura e molho cítrico.', 22.90, 'Vegetarianos', 1, 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=900&q=85', (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Marmita Executiva', 'Arroz, feijão, proteína e acompanhamento.', 24.90, 'Marmitas', 1, NULL, (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com')),
++    ('Strogonoff de Frango', 'Frango ao molho cremoso com arroz e batata palha.', 29.90, 'Pratos principais', 1, NULL, (SELECT id_usuario FROM Usuario WHERE email = 'ana.admin@saborclic.com'));
+ 
+ /* ---------------------------------------------------------------------
+    Bancadas
+    --------------------------------------------------------------------- */
+ INSERT INTO Bancada (identificacao, descricao, capacidade, equipamentos, valor_hora, status) VALUES
+-    (N'Bancada 01', N'Cozinha equipada com fogão industrial e coifa.', 4, N'Fogão 4 bocas, forno, coifa, geladeira', 45.00, N'Disponível'),
+-    (N'Bancada 02', N'Bancada ampla para produção de marmitas.',        6, N'Fogão 6 bocas, forno combinado, freezer', 60.00, N'Disponível'),
+-    (N'Bancada 03', N'Espaço em reforma da exaustão.',                  3, N'Fogão 2 bocas, geladeira',                35.00, N'Manutenção');
++    ('Bancada 01', 'Cozinha equipada com fogão industrial e coifa.', 4, 'Fogão 4 bocas, forno, coifa, geladeira', 45.00, 'Disponível'),
++    ('Bancada 02', 'Bancada ampla para produção de marmitas.',        6, 'Fogão 6 bocas, forno combinado, freezer', 60.00, 'Disponível'),
++    ('Bancada 03', 'Espaço em reforma da exaustão.',                  3, 'Fogão 2 bocas, geladeira',                35.00, 'Manutenção');
+ 
+ /* ---------------------------------------------------------------------
+    Ingredientes (saldo atual e estoque mínimo)
+@@ -116,116 +113,98 @@
+    mínimo, para o relatório de reposição ter o que mostrar.
+    --------------------------------------------------------------------- */
+ INSERT INTO Ingrediente (nome, unidade_medida, quantidade_estoque, estoque_minimo) VALUES
+-    (N'Arroz',             N'kg', 18.500, 10.000),
+-    (N'Feijão',            N'kg', 12.000,  8.000),
+-    (N'Peito de frango',   N'kg', 14.750, 10.000),
+-    (N'Carne moída',       N'kg',  9.200,  6.000),
+-    (N'Massa de lasanha',  N'kg',  5.400,  4.000),
+-    (N'Molho de tomate',   N'L',   7.000,  5.000),
+-    (N'Queijo mussarela',  N'kg',  3.100,  4.000),
+-    (N'Creme de leite',    N'L',   1.500,  2.000),
+-    (N'Batata palha',      N'kg',  2.000,  1.000);
++    ('Arroz',             'kg', 18.500, 10.000),
++    ('Feijão',            'kg', 12.000,  8.000),
++    ('Peito de frango',   'kg', 14.750, 10.000),
++    ('Carne moída',       'kg',  9.200,  6.000),
++    ('Massa de lasanha',  'kg',  5.400,  4.000),
++    ('Molho de tomate',   'L',   7.000,  5.000),
++    ('Queijo mussarela',  'kg',  3.100,  4.000),
++    ('Creme de leite',    'L',   1.500,  2.000),
++    ('Batata palha',      'kg',  2.000,  1.000);
+ 
+ /* ---------------------------------------------------------------------
+    Fichas técnicas (consumo de ingredientes por porção)
+    --------------------------------------------------------------------- */
++WITH f (prato, ingrediente, quantidade) AS (
++    VALUES
++        ('Marmita Executiva',    'Arroz',            0.150),
++        ('Marmita Executiva',    'Feijão',           0.100),
++        ('Marmita Executiva',    'Peito de frango',  0.200),
++        ('Strogonoff de Frango', 'Peito de frango',  0.250),
++        ('Strogonoff de Frango', 'Creme de leite',   0.100),
++        ('Strogonoff de Frango', 'Arroz',            0.150),
++        ('Strogonoff de Frango', 'Batata palha',     0.030),
++        ('Strogonoff de Frango', 'Molho de tomate',  0.050),
++        ('Lasanha à Bolonhesa',  'Massa de lasanha', 0.150),
++        ('Lasanha à Bolonhesa',  'Carne moída',      0.180),
++        ('Lasanha à Bolonhesa',  'Molho de tomate',  0.150),
++        ('Lasanha à Bolonhesa',  'Queijo mussarela', 0.120)
++)
+ INSERT INTO Ficha_Tecnica (id_prato, id_ingrediente, quantidade_utilizada)
+ SELECT p.id_prato, i.id_ingrediente, f.quantidade
+-FROM (VALUES
+-        (N'Marmita Executiva',    N'Arroz',            0.150),
+-        (N'Marmita Executiva',    N'Feijão',           0.100),
+-        (N'Marmita Executiva',    N'Peito de frango',  0.200),
+-        (N'Strogonoff de Frango', N'Peito de frango',  0.250),
+-        (N'Strogonoff de Frango', N'Creme de leite',   0.100),
+-        (N'Strogonoff de Frango', N'Arroz',            0.150),
+-        (N'Strogonoff de Frango', N'Batata palha',     0.030),
+-        (N'Strogonoff de Frango', N'Molho de tomate',  0.050),
+-        (N'Lasanha à Bolonhesa',  N'Massa de lasanha', 0.150),
+-        (N'Lasanha à Bolonhesa',  N'Carne moída',      0.180),
+-        (N'Lasanha à Bolonhesa',  N'Molho de tomate',  0.150),
+-        (N'Lasanha à Bolonhesa',  N'Queijo mussarela', 0.120)
+-     ) AS f (prato, ingrediente, quantidade)
++FROM f
+ JOIN Prato AS p        ON p.nome = f.prato
+ JOIN Ingrediente AS i  ON i.nome = f.ingrediente;
+ 
+ /* ---------------------------------------------------------------------
+    Pedidos de exemplo (histórico para os relatórios de vendas)
+    --------------------------------------------------------------------- */
+-DECLARE @bruno   INT = (SELECT id_usuario FROM Usuario WHERE email = N'bruno.cliente@saborclic.com');
+-DECLARE @daniela INT = (SELECT id_usuario FROM Usuario WHERE email = N'daniela.cliente@saborclic.com');
+-DECLARE @carla   INT = (SELECT id_usuario FROM Usuario WHERE email = N'carla.cozinha@saborclic.com');
+-DECLARE @marcos  INT = (SELECT id_usuario FROM Usuario WHERE email = N'marcos.cozinha@saborclic.com');
+-
+-DECLARE @p1 INT, @p2 INT, @p3 INT, @p4 INT, @p5 INT, @p6 INT;
+-
+-INSERT INTO Pedido (id_usuario_cliente, id_usuario_cozinheiro, data_hora_pedido, status)
+-VALUES (@bruno, @carla, '2026-10-26T12:10:00', N'Pronto para Entrega');
+-SET @p1 = SCOPE_IDENTITY();
+-
+-INSERT INTO Pedido (id_usuario_cliente, id_usuario_cozinheiro, data_hora_pedido, status)
+-VALUES (@daniela, @marcos, '2026-10-28T19:30:00', N'Pronto para Entrega');
+-SET @p2 = SCOPE_IDENTITY();
+-
+-INSERT INTO Pedido (id_usuario_cliente, id_usuario_cozinheiro, data_hora_pedido, status)
+-VALUES (@bruno, @carla, '2026-11-02T12:45:00', N'Pronto para Entrega');
+-SET @p3 = SCOPE_IDENTITY();
+-
+-INSERT INTO Pedido (id_usuario_cliente, id_usuario_cozinheiro, data_hora_pedido, status)
+-VALUES (@bruno, @marcos, '2026-11-03T13:05:00', N'Em Preparo');
+-SET @p4 = SCOPE_IDENTITY();
+-
+-INSERT INTO Pedido (id_usuario_cliente, id_usuario_cozinheiro, data_hora_pedido, status)
+-VALUES (@daniela, @carla, '2026-11-04T11:50:00', N'Iniciando Preparo');
+-SET @p5 = SCOPE_IDENTITY();
+-
+-INSERT INTO Pedido (id_usuario_cliente, id_usuario_cozinheiro, data_hora_pedido, status)
+-VALUES (@bruno, NULL, '2026-11-04T12:20:00', N'Aguardando');
+-SET @p6 = SCOPE_IDENTITY();
+-
+-DECLARE @itens TABLE (
+-    id_pedido INT,
+-    prato     NVARCHAR(150),
+-    qtd       INT,
+-    tempo_min INT
+-);
+-
+-INSERT INTO @itens (id_pedido, prato, qtd, tempo_min) VALUES
+-    (@p1, N'Marmita Executiva',    2, 20),
+-    (@p1, N'Lasanha à Bolonhesa',  1, 40),
+-    (@p2, N'Strogonoff de Frango', 1, 30),
+-    (@p2, N'Marmita Executiva',    1, 20),
+-    (@p3, N'Lasanha à Bolonhesa',  3, 40),
+-    (@p4, N'Strogonoff de Frango', 2, 30),
+-    (@p5, N'Lasanha à Bolonhesa',  1, 40),
+-    (@p5, N'Marmita Executiva',    2, 20),
+-    (@p6, N'Marmita Executiva',    1, 20),
+-    (@p6, N'Strogonoff de Frango', 1, 30);
+-
++WITH u AS (
++    SELECT
++        (SELECT id_usuario FROM Usuario WHERE email = 'bruno.cliente@saborclic.com')   AS bruno,
++        (SELECT id_usuario FROM Usuario WHERE email = 'daniela.cliente@saborclic.com') AS daniela,
++        (SELECT id_usuario FROM Usuario WHERE email = 'carla.cozinha@saborclic.com')   AS carla,
++        (SELECT id_usuario FROM Usuario WHERE email = 'marcos.cozinha@saborclic.com')  AS marcos
++)
++INSERT INTO Pedido (id_pedido, id_usuario_cliente, id_usuario_cozinheiro, data_hora_pedido, status)
++SELECT 1, bruno,   carla,  '2026-10-26 12:10:00.000000', 'Pronto para Entrega' FROM u UNION ALL
++SELECT 2, daniela, marcos, '2026-10-28 19:30:00.000000', 'Pronto para Entrega' FROM u UNION ALL
++SELECT 3, bruno,   carla,  '2026-11-02 12:45:00.000000', 'Pronto para Entrega' FROM u UNION ALL
++SELECT 4, bruno,   marcos, '2026-11-03 13:05:00.000000', 'Em Preparo'          FROM u UNION ALL
++SELECT 5, daniela, carla,  '2026-11-04 11:50:00.000000', 'Iniciando Preparo'   FROM u UNION ALL
++SELECT 6, bruno,   NULL,   '2026-11-04 12:20:00.000000', 'Aguardando'          FROM u;
++
++WITH i (id_pedido, prato, qtd, tempo_min) AS (
++    VALUES
++        (1, 'Marmita Executiva',    2, 20),
++        (1, 'Lasanha à Bolonhesa',  1, 40),
++        (2, 'Strogonoff de Frango', 1, 30),
++        (2, 'Marmita Executiva',    1, 20),
++        (3, 'Lasanha à Bolonhesa',  3, 40),
++        (4, 'Strogonoff de Frango', 2, 30),
++        (5, 'Lasanha à Bolonhesa',  1, 40),
++        (5, 'Marmita Executiva',    2, 20),
++        (6, 'Marmita Executiva',    1, 20),
++        (6, 'Strogonoff de Frango', 1, 30)
++)
+ INSERT INTO Item_Pedido (id_pedido, id_prato, quantidade, preco_unitario, tempo_estimado_preparo)
+ SELECT i.id_pedido, pr.id_prato, i.qtd, pr.preco, i.tempo_min
+-FROM @itens AS i
++FROM i
+ JOIN Prato AS pr ON pr.nome = i.prato;
+ 
+-UPDATE p
+-SET p.valor_total = (
++UPDATE Pedido
++SET valor_total = ROUND((
+         SELECT SUM(ip.quantidade * ip.preco_unitario)
+         FROM Item_Pedido AS ip
+-        WHERE ip.id_pedido = p.id_pedido
+-    )
+-FROM Pedido AS p;
++        WHERE ip.id_pedido = Pedido.id_pedido
++    ), 2);
+ 
+ /* ---------------------------------------------------------------------
+    Agendamentos de bancada (sem sobreposição entre os confirmados)
+    --------------------------------------------------------------------- */
+-DECLARE @b1 INT = (SELECT id_bancada FROM Bancada WHERE identificacao = N'Bancada 01');
+-DECLARE @b2 INT = (SELECT id_bancada FROM Bancada WHERE identificacao = N'Bancada 02');
+-
+-INSERT INTO Agendamento (id_usuario_cliente, id_bancada, data_hora_inicio, data_hora_fim, status) VALUES
+-    (@bruno,   @b1, '2026-10-20T08:00:00', '2026-10-20T12:00:00', N'Concluído'),
+-    (@daniela, @b1, '2026-10-27T14:00:00', '2026-10-27T18:00:00', N'Concluído'),
+-    (@bruno,   @b1, '2026-11-06T08:00:00', '2026-11-06T11:00:00', N'Confirmado'),
+-    (@daniela, @b1, '2026-11-06T13:00:00', '2026-11-06T17:00:00', N'Confirmado'),
+-    (@bruno,   @b1, '2026-11-12T09:00:00', '2026-11-12T13:00:00', N'Cancelado'),
+-    (@daniela, @b2, '2026-11-05T09:00:00', '2026-11-05T15:00:00', N'Confirmado'),
+-    (@bruno,   @b2, '2026-11-10T08:00:00', '2026-11-10T12:00:00', N'Confirmado');
+-GO
++WITH r (cliente, bancada, inicio, fim, status) AS (
++    VALUES
++        ('bruno.cliente@saborclic.com',   'Bancada 01', '2026-10-20 08:00:00.000000', '2026-10-20 12:00:00.000000', 'Concluído'),
++        ('daniela.cliente@saborclic.com', 'Bancada 01', '2026-10-27 14:00:00.000000', '2026-10-27 18:00:00.000000', 'Concluído'),
++        ('bruno.cliente@saborclic.com',   'Bancada 01', '2026-11-06 08:00:00.000000', '2026-11-06 11:00:00.000000', 'Confirmado'),
++        ('daniela.cliente@saborclic.com', 'Bancada 01', '2026-11-06 13:00:00.000000', '2026-11-06 17:00:00.000000', 'Confirmado'),
++        ('bruno.cliente@saborclic.com',   'Bancada 01', '2026-11-12 09:00:00.000000', '2026-11-12 13:00:00.000000', 'Cancelado'),
++        ('daniela.cliente@saborclic.com', 'Bancada 02', '2026-11-05 09:00:00.000000', '2026-11-05 15:00:00.000000', 'Confirmado'),
++        ('bruno.cliente@saborclic.com',   'Bancada 02', '2026-11-10 08:00:00.000000', '2026-11-10 12:00:00.000000', 'Confirmado')
++)
++INSERT INTO Agendamento (id_usuario_cliente, id_bancada, data_hora_inicio, data_hora_fim, status)
++SELECT u.id_usuario, b.id_bancada, r.inicio, r.fim, r.status
++FROM r
++JOIN Usuario AS u  ON u.email = r.cliente
++JOIN Bancada AS b  ON b.identificacao = r.bancada;
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/database/11_queries_relatorios.sql sabor-clic/database/11_queries_relatorios.sql
+--- sqlserver/database/11_queries_relatorios.sql	2026-11-14 07:02:50.160157445 -0300
++++ sqlite/database/11_queries_relatorios.sql	2026-11-14 07:21:51.030481786 -0300
+@@ -1,204 +1,223 @@
+-﻿/* =====================================================================
+-   SABOR & CLIC — QUERIES DE RELATÓRIOS (SQL Server / T-SQL)
+-   Consultas analíticas: vendas, estoque e ocupação.
+-   Somente leitura (SELECT). Requer SQL Server 2017+ (STRING_AGG).
+-   ===================================================================== */
+-
+-USE SaborClic;
+-GO
+-
+-/* =====================================================================
+-   A. VENDAS
+-   ===================================================================== */
+-
+-/* ---- A1. Faturamento, volume e ticket médio por dia ---- */
+-SELECT CAST(p.data_hora_pedido AS DATE)           AS dia,
+-       COUNT(*)                                   AS qtd_pedidos,
+-       SUM(p.valor_total)                         AS faturamento,
+-       CAST(AVG(p.valor_total) AS DECIMAL(10,2))  AS ticket_medio
+-FROM Pedido AS p
+-GROUP BY CAST(p.data_hora_pedido AS DATE)
+-ORDER BY dia DESC;
+-
+-/* ---- A2. Pratos mais vendidos (unidades e receita) ---- */
+-SELECT TOP 10
+-       pr.id_prato,
+-       pr.nome,
+-       pr.categoria,
+-       SUM(ip.quantidade)                       AS unidades_vendidas,
+-       SUM(ip.quantidade * ip.preco_unitario)   AS receita
+-FROM Item_Pedido AS ip
+-JOIN Prato AS pr ON pr.id_prato = ip.id_prato
+-GROUP BY pr.id_prato, pr.nome, pr.categoria
+-ORDER BY unidades_vendidas DESC, receita DESC;
+-
+-/* ---- A3. Receita por categoria e participação no total ---- */
+-SELECT ISNULL(pr.categoria, N'Sem categoria')                AS categoria,
+-       SUM(ip.quantidade * ip.preco_unitario)                AS receita,
+-       CAST(100.0 * SUM(ip.quantidade * ip.preco_unitario)
+-            / SUM(SUM(ip.quantidade * ip.preco_unitario)) OVER ()
+-            AS DECIMAL(5,2))                                 AS percentual
+-FROM Item_Pedido AS ip
+-JOIN Prato AS pr ON pr.id_prato = ip.id_prato
+-GROUP BY ISNULL(pr.categoria, N'Sem categoria')
+-ORDER BY receita DESC;
+-
+-/* ---- A4. Pedidos por status, com o pedido mais antigo de cada fila ---- */
+-SELECT p.status,
+-       COUNT(*)                  AS qtd_pedidos,
+-       MIN(p.data_hora_pedido)   AS pedido_mais_antigo
+-FROM Pedido AS p
+-GROUP BY p.status
+-ORDER BY CASE p.status
+-             WHEN N'Aguardando'          THEN 1
+-             WHEN N'Iniciando Preparo'   THEN 2
+-             WHEN N'Em Preparo'          THEN 3
+-             WHEN N'Pronto para Entrega' THEN 4
+-         END;
+-
+-/* ---- A5. Fila da cozinha (KDS): pedidos ainda não finalizados ---- */
+-SELECT p.id_pedido,
+-       p.status,
+-       p.data_hora_pedido,
+-       DATEDIFF(MINUTE, p.data_hora_pedido, SYSDATETIME())             AS minutos_na_fila,
+-       uc.nome                                                         AS cliente,
+-       ISNULL(uz.nome, N'(sem cozinheiro)')                            AS cozinheiro,
+-       STRING_AGG(CONCAT(ip.quantidade, N'x ', pr.nome), N', ')        AS itens,
+-       SUM(ip.quantidade * ISNULL(ip.tempo_estimado_preparo, 0))       AS minutos_estimados_preparo
+-FROM Pedido AS p
+-JOIN Usuario AS uc          ON uc.id_usuario = p.id_usuario_cliente
+-LEFT JOIN Usuario AS uz     ON uz.id_usuario = p.id_usuario_cozinheiro
+-JOIN Item_Pedido AS ip      ON ip.id_pedido  = p.id_pedido
+-JOIN Prato AS pr            ON pr.id_prato   = ip.id_prato
+-WHERE p.status <> N'Pronto para Entrega'
+-GROUP BY p.id_pedido, p.status, p.data_hora_pedido, uc.nome, uz.nome
+-ORDER BY p.data_hora_pedido;
+-
+-/* ---- A6. Desempenho por cozinheiro (inclui quem ainda não pegou pedido) ---- */
+-SELECT u.nome                                  AS cozinheiro,
+-       c.turno_trabalho,
+-       COUNT(DISTINCT p.id_pedido)             AS pedidos_atribuidos,
+-       ISNULL(SUM(ip.quantidade), 0)           AS itens_a_preparar
+-FROM Cozinheiro AS c
+-JOIN Usuario AS u              ON u.id_usuario = c.id_usuario
+-LEFT JOIN Pedido AS p          ON p.id_usuario_cozinheiro = c.id_usuario
+-LEFT JOIN Item_Pedido AS ip    ON ip.id_pedido = p.id_pedido
+-GROUP BY u.nome, c.turno_trabalho
+-ORDER BY pedidos_atribuidos DESC;
+-
+-/* ---- A7. Clientes recorrentes (2 ou mais pedidos) ---- */
+-SELECT u.nome                                    AS cliente,
+-       COUNT(*)                                  AS qtd_pedidos,
+-       SUM(p.valor_total)                        AS total_gasto,
+-       CAST(AVG(p.valor_total) AS DECIMAL(10,2)) AS ticket_medio,
+-       MAX(p.data_hora_pedido)                   AS ultimo_pedido
+-FROM Pedido AS p
+-JOIN Usuario AS u ON u.id_usuario = p.id_usuario_cliente
+-GROUP BY u.nome
+-HAVING COUNT(*) >= 2
+-ORDER BY total_gasto DESC;
+-
+-/* =====================================================================
+-   B. ESTOQUE
+-   ===================================================================== */
+-
+-/* ---- B1. Ingredientes abaixo do estoque mínimo (lista de reposição) ---- */
+-SELECT i.id_ingrediente,
+-       i.nome,
+-       i.unidade_medida,
+-       i.quantidade_estoque,
+-       i.estoque_minimo,
+-       i.estoque_minimo - i.quantidade_estoque AS falta_para_o_minimo
+-FROM Ingrediente AS i
+-WHERE i.quantidade_estoque < i.estoque_minimo
+-ORDER BY falta_para_o_minimo DESC;
+-
+-/* ---- B2. Posição geral do estoque com classificação de risco ---- */
+-SELECT i.nome,
+-       i.unidade_medida,
+-       i.quantidade_estoque,
+-       i.estoque_minimo,
+-       CASE
+-           WHEN i.quantidade_estoque < i.estoque_minimo       THEN N'Crítico'
+-           WHEN i.quantidade_estoque < i.estoque_minimo * 1.5 THEN N'Atenção'
+-           ELSE N'Normal'
+-       END AS situacao
+-FROM Ingrediente AS i
+-ORDER BY i.quantidade_estoque / NULLIF(i.estoque_minimo, 0);
+-
+-/* ---- B3. Consumo teórico de ingredientes pelos pedidos (via ficha técnica) ---- */
+-SELECT ing.nome,
+-       ing.unidade_medida,
+-       SUM(ip.quantidade * ft.quantidade_utilizada) AS total_consumido
+-FROM Item_Pedido AS ip
+-JOIN Ficha_Tecnica AS ft  ON ft.id_prato = ip.id_prato
+-JOIN Ingrediente AS ing   ON ing.id_ingrediente = ft.id_ingrediente
+-GROUP BY ing.nome, ing.unidade_medida
+-ORDER BY total_consumido DESC;
+-
+-/* ---- B4. Quantas porções de cada prato o estoque atual permite produzir,
+-        e qual ingrediente limita (o que acaba primeiro) ---- */
+-SELECT pr.nome                          AS prato,
+-       lim.ingrediente                  AS ingrediente_limitante,
+-       CAST(lim.porcoes AS INT)         AS porcoes_possiveis
+-FROM Prato AS pr
+-CROSS APPLY (
+-    SELECT TOP 1
+-           ing.nome AS ingrediente,
+-           FLOOR(ing.quantidade_estoque / ft.quantidade_utilizada) AS porcoes
+-    FROM Ficha_Tecnica AS ft
+-    JOIN Ingrediente AS ing ON ing.id_ingrediente = ft.id_ingrediente
+-    WHERE ft.id_prato = pr.id_prato
+-    ORDER BY ing.quantidade_estoque / ft.quantidade_utilizada
+-) AS lim
+-ORDER BY porcoes_possiveis;
+-
+-/* =====================================================================
+-   C. OCUPAÇÃO DAS BANCADAS
+-      Ajuste o período e as horas de funcionamento por dia nas variáveis.
+-   ===================================================================== */
+-DECLARE @inicio_periodo          DATETIME2     = '2026-11-01T00:00:00';
+-DECLARE @fim_periodo             DATETIME2     = '2026-12-01T00:00:00';
+-DECLARE @horas_funcionamento_dia DECIMAL(5,2)  = 12;
+-DECLARE @horas_disponiveis       DECIMAL(10,2) =
+-        DATEDIFF(DAY, @inicio_periodo, @fim_periodo) * @horas_funcionamento_dia;
+-
+-/* ---- C1. Taxa de ocupação e receita de locação por bancada no período
+-        (bancadas sem reserva aparecem com zero) ---- */
+-SELECT b.identificacao,
+-       b.status                                                         AS status_bancada,
+-       COUNT(a.id_agendamento)                                          AS qtd_agendamentos,
+-       CAST(ISNULL(SUM(DATEDIFF(MINUTE, a.data_hora_inicio, a.data_hora_fim)), 0) / 60.0
+-            AS DECIMAL(10,2))                                           AS horas_reservadas,
+-       CAST(100.0 * ISNULL(SUM(DATEDIFF(MINUTE, a.data_hora_inicio, a.data_hora_fim)), 0)
+-            / 60.0 / @horas_disponiveis AS DECIMAL(5,2))                AS taxa_ocupacao_pct,
+-       CAST(ISNULL(SUM(DATEDIFF(MINUTE, a.data_hora_inicio, a.data_hora_fim) / 60.0
+-                       * b.valor_hora), 0) AS DECIMAL(10,2))            AS receita_locacao
+-FROM Bancada AS b
+-LEFT JOIN Agendamento AS a
+-       ON a.id_bancada = b.id_bancada
+-      AND a.status IN (N'Confirmado', N'Concluído')
+-      AND a.data_hora_inicio >= @inicio_periodo
+-      AND a.data_hora_inicio <  @fim_periodo
+-GROUP BY b.id_bancada, b.identificacao, b.status, b.valor_hora
+-ORDER BY taxa_ocupacao_pct DESC;
+-
+-/* ---- C2. Agendamentos por status e taxa de cancelamento ---- */
+-SELECT a.status,
+-       COUNT(*) AS qtd_agendamentos,
+-       CAST(100.0 * COUNT(*) / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) AS percentual
+-FROM Agendamento AS a
+-GROUP BY a.status
+-ORDER BY qtd_agendamentos DESC;
+-
+-/* ---- C3. Bancadas sem nenhuma reserva futura confirmada ---- */
+-SELECT b.identificacao, b.status, b.valor_hora
+-FROM Bancada AS b
+-WHERE NOT EXISTS (
+-    SELECT 1
+-    FROM Agendamento AS a
+-    WHERE a.id_bancada = b.id_bancada
+-      AND a.status = N'Confirmado'
+-      AND a.data_hora_inicio >= SYSDATETIME()
+-);
+-GO
++/* =====================================================================
++   SABOR & CLIC — QUERIES DE RELATÓRIOS (SQLite)
++   Consultas analíticas: vendas, estoque e ocupação.
++   Somente leitura (SELECT). Requer SQLite 3.25+ (funções de janela).
++
++   Principais trocas em relação ao T-SQL:
++     CAST(x AS DATE) -> date(x)          TOP n        -> LIMIT n
++     ISNULL          -> COALESCE         STRING_AGG   -> group_concat
++     CONCAT          -> operador ||      SYSDATETIME  -> datetime('now','localtime')
++     DATEDIFF        -> julianday(a)-julianday(b), em dias, convertido p/ minutos
++     CROSS APPLY     -> função de janela ROW_NUMBER() em uma CTE
++     DECLARE @var    -> CTE "parametros"
++     DECIMAL(p,s)    -> ROUND(x, s)  (SQLite usa ponto flutuante: sem ROUND aparecem
++                                      resíduos como 149.39999999999998)
++   ===================================================================== */
++
++/* =====================================================================
++   A. VENDAS
++   ===================================================================== */
++
++/* ---- A1. Faturamento, volume e ticket médio por dia ---- */
++SELECT date(p.data_hora_pedido)        AS dia,
++       COUNT(*)                        AS qtd_pedidos,
++       ROUND(SUM(p.valor_total), 2)    AS faturamento,
++       ROUND(AVG(p.valor_total), 2)    AS ticket_medio
++FROM Pedido AS p
++GROUP BY date(p.data_hora_pedido)
++ORDER BY dia DESC;
++
++/* ---- A2. Pratos mais vendidos (unidades e receita) ---- */
++SELECT pr.id_prato,
++       pr.nome,
++       pr.categoria,
++       SUM(ip.quantidade)                       AS unidades_vendidas,
++       ROUND(SUM(ip.quantidade * ip.preco_unitario), 2) AS receita
++FROM Item_Pedido AS ip
++JOIN Prato AS pr ON pr.id_prato = ip.id_prato
++GROUP BY pr.id_prato, pr.nome, pr.categoria
++ORDER BY unidades_vendidas DESC, receita DESC
++LIMIT 10;
++
++/* ---- A3. Receita por categoria e participação no total ---- */
++SELECT COALESCE(pr.categoria, 'Sem categoria')               AS categoria,
++       ROUND(SUM(ip.quantidade * ip.preco_unitario), 2)      AS receita,
++       ROUND(100.0 * SUM(ip.quantidade * ip.preco_unitario)
++             / SUM(SUM(ip.quantidade * ip.preco_unitario)) OVER (), 2) AS percentual
++FROM Item_Pedido AS ip
++JOIN Prato AS pr ON pr.id_prato = ip.id_prato
++GROUP BY COALESCE(pr.categoria, 'Sem categoria')
++ORDER BY receita DESC;
++
++/* ---- A4. Pedidos por status, com o pedido mais antigo de cada fila ---- */
++SELECT p.status,
++       COUNT(*)                  AS qtd_pedidos,
++       MIN(p.data_hora_pedido)   AS pedido_mais_antigo
++FROM Pedido AS p
++GROUP BY p.status
++ORDER BY CASE p.status
++             WHEN 'Aguardando'          THEN 1
++             WHEN 'Iniciando Preparo'   THEN 2
++             WHEN 'Em Preparo'          THEN 3
++             WHEN 'Pronto para Entrega' THEN 4
++         END;
++
++/* ---- A5. Fila da cozinha (KDS): pedidos ainda não finalizados ---- */
++SELECT p.id_pedido,
++       p.status,
++       p.data_hora_pedido,
++       CAST((julianday('now', 'localtime') - julianday(p.data_hora_pedido)) * 1440 AS INTEGER) AS minutos_na_fila,
++       uc.nome                                                         AS cliente,
++       COALESCE(uz.nome, '(sem cozinheiro)')                           AS cozinheiro,
++       group_concat(ip.quantidade || 'x ' || pr.nome, ', ')            AS itens,
++       SUM(ip.quantidade * COALESCE(ip.tempo_estimado_preparo, 0))     AS minutos_estimados_preparo
++FROM Pedido AS p
++JOIN Usuario AS uc          ON uc.id_usuario = p.id_usuario_cliente
++LEFT JOIN Usuario AS uz     ON uz.id_usuario = p.id_usuario_cozinheiro
++JOIN Item_Pedido AS ip      ON ip.id_pedido  = p.id_pedido
++JOIN Prato AS pr            ON pr.id_prato   = ip.id_prato
++WHERE p.status <> 'Pronto para Entrega'
++GROUP BY p.id_pedido, p.status, p.data_hora_pedido, uc.nome, uz.nome
++ORDER BY p.data_hora_pedido;
++
++/* ---- A6. Desempenho por cozinheiro (inclui quem ainda não pegou pedido) ---- */
++SELECT u.nome                                  AS cozinheiro,
++       c.turno_trabalho,
++       COUNT(DISTINCT p.id_pedido)             AS pedidos_atribuidos,
++       COALESCE(SUM(ip.quantidade), 0)         AS itens_a_preparar
++FROM Cozinheiro AS c
++JOIN Usuario AS u              ON u.id_usuario = c.id_usuario
++LEFT JOIN Pedido AS p          ON p.id_usuario_cozinheiro = c.id_usuario
++LEFT JOIN Item_Pedido AS ip    ON ip.id_pedido = p.id_pedido
++GROUP BY u.nome, c.turno_trabalho
++ORDER BY pedidos_atribuidos DESC;
++
++/* ---- A7. Clientes recorrentes (2 ou mais pedidos) ---- */
++SELECT u.nome                                    AS cliente,
++       COUNT(*)                                  AS qtd_pedidos,
++       ROUND(SUM(p.valor_total), 2)              AS total_gasto,
++       ROUND(AVG(p.valor_total), 2)              AS ticket_medio,
++       MAX(p.data_hora_pedido)                   AS ultimo_pedido
++FROM Pedido AS p
++JOIN Usuario AS u ON u.id_usuario = p.id_usuario_cliente
++GROUP BY u.nome
++HAVING COUNT(*) >= 2
++ORDER BY total_gasto DESC;
++
++/* =====================================================================
++   B. ESTOQUE
++   ===================================================================== */
++
++/* ---- B1. Ingredientes abaixo do estoque mínimo (lista de reposição) ---- */
++SELECT i.id_ingrediente,
++       i.nome,
++       i.unidade_medida,
++       i.quantidade_estoque,
++       i.estoque_minimo,
++       ROUND(i.estoque_minimo - i.quantidade_estoque, 3) AS falta_para_o_minimo
++FROM Ingrediente AS i
++WHERE i.quantidade_estoque < i.estoque_minimo
++ORDER BY falta_para_o_minimo DESC;
++
++/* ---- B2. Posição geral do estoque com classificação de risco ---- */
++SELECT i.nome,
++       i.unidade_medida,
++       i.quantidade_estoque,
++       i.estoque_minimo,
++       CASE
++           WHEN i.quantidade_estoque < i.estoque_minimo       THEN 'Crítico'
++           WHEN i.quantidade_estoque < i.estoque_minimo * 1.5 THEN 'Atenção'
++           ELSE 'Normal'
++       END AS situacao
++FROM Ingrediente AS i
++ORDER BY i.quantidade_estoque / NULLIF(i.estoque_minimo, 0);
++
++/* ---- B3. Consumo teórico de ingredientes pelos pedidos (via ficha técnica) ---- */
++SELECT ing.nome,
++       ing.unidade_medida,
++       ROUND(SUM(ip.quantidade * ft.quantidade_utilizada), 3) AS total_consumido
++FROM Item_Pedido AS ip
++JOIN Ficha_Tecnica AS ft  ON ft.id_prato = ip.id_prato
++JOIN Ingrediente AS ing   ON ing.id_ingrediente = ft.id_ingrediente
++GROUP BY ing.nome, ing.unidade_medida
++ORDER BY total_consumido DESC;
++
++/* ---- B4. Quantas porções de cada prato o estoque atual permite produzir,
++        e qual ingrediente limita (o que acaba primeiro).
++        CROSS APPLY + TOP 1 vira ROW_NUMBER() por prato. ---- */
++WITH calculo AS (
++    SELECT ft.id_prato,
++           ing.nome AS ingrediente,
++           CAST(ing.quantidade_estoque / ft.quantidade_utilizada AS INTEGER) AS porcoes,
++           ROW_NUMBER() OVER (
++               PARTITION BY ft.id_prato
++               ORDER BY ing.quantidade_estoque / ft.quantidade_utilizada
++           ) AS posicao
++    FROM Ficha_Tecnica AS ft
++    JOIN Ingrediente AS ing ON ing.id_ingrediente = ft.id_ingrediente
++)
++SELECT pr.nome             AS prato,
++       c.ingrediente       AS ingrediente_limitante,
++       c.porcoes           AS porcoes_possiveis
++FROM Prato AS pr
++JOIN calculo AS c ON c.id_prato = pr.id_prato AND c.posicao = 1
++ORDER BY porcoes_possiveis;
++
++/* =====================================================================
++   C. OCUPAÇÃO DAS BANCADAS
++      Ajuste o período e as horas de funcionamento por dia na CTE "parametros".
++   ===================================================================== */
++
++/* ---- C1. Taxa de ocupação e receita de locação por bancada no período
++        (bancadas sem reserva aparecem com zero) ---- */
++WITH parametros AS (
++    SELECT '2026-11-01 00:00:00' AS inicio_periodo,
++           '2026-12-01 00:00:00' AS fim_periodo,
++           12.0                  AS horas_funcionamento_dia
++),
++resumo AS (
++    SELECT b.id_bancada,
++           b.identificacao,
++           b.status                                   AS status_bancada,
++           b.valor_hora,
++           COUNT(a.id_agendamento)                    AS qtd_agendamentos,
++           COALESCE(SUM((julianday(a.data_hora_fim) - julianday(a.data_hora_inicio)) * 24), 0) AS horas_reservadas
++    FROM Bancada AS b
++    CROSS JOIN parametros AS pa
++    LEFT JOIN Agendamento AS a
++           ON a.id_bancada = b.id_bancada
++          AND a.status IN ('Confirmado', 'Concluído')
++          AND a.data_hora_inicio >= pa.inicio_periodo
++          AND a.data_hora_inicio <  pa.fim_periodo
++    GROUP BY b.id_bancada, b.identificacao, b.status, b.valor_hora
++)
++SELECT r.identificacao,
++       r.status_bancada,
++       r.qtd_agendamentos,
++       ROUND(r.horas_reservadas, 2)                                           AS horas_reservadas,
++       ROUND(100.0 * r.horas_reservadas
++             / ((julianday(pa.fim_periodo) - julianday(pa.inicio_periodo)) * pa.horas_funcionamento_dia), 2)
++                                                                              AS taxa_ocupacao_pct,
++       ROUND(r.horas_reservadas * r.valor_hora, 2)                            AS receita_locacao
++FROM resumo AS r
++CROSS JOIN parametros AS pa
++ORDER BY taxa_ocupacao_pct DESC;
++
++/* ---- C2. Agendamentos por status e taxa de cancelamento ---- */
++SELECT a.status,
++       COUNT(*) AS qtd_agendamentos,
++       ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS percentual
++FROM Agendamento AS a
++GROUP BY a.status
++ORDER BY qtd_agendamentos DESC;
++
++/* ---- C3. Bancadas sem nenhuma reserva futura confirmada ---- */
++SELECT b.identificacao, b.status, b.valor_hora
++FROM Bancada AS b
++WHERE NOT EXISTS (
++    SELECT 1
++    FROM Agendamento AS a
++    WHERE a.id_bancada = b.id_bancada
++      AND a.status = 'Confirmado'
++      AND a.data_hora_inicio >= datetime('now', 'localtime')
++);
+diff -ruN '--exclude=__pycache__' '--exclude=docs' '--exclude=README.md' '--exclude=DIFERENCAS_SQLServer_vs_SQLite.md' '--exclude=seed_data.json' sqlserver/database/20_triggers.sql sabor-clic/database/20_triggers.sql
+--- sqlserver/database/20_triggers.sql	2026-11-14 07:02:50.160295535 -0300
++++ sqlite/database/20_triggers.sql	2026-11-14 07:20:50.981928490 -0300
+@@ -1,151 +1,165 @@
+-﻿/* =====================================================================
+-   SABOR & CLIC — TRIGGERS (SQL Server / T-SQL)
+-   Automação de regras de negócio no próprio banco.
+-   Execute DEPOIS do 01_modelo_fisico.sql (e do 02, se quiser os dados).
+-
+-   1. trg_item_pedido_baixa_estoque  — baixa/estorno automático de ingredientes
+-   2. trg_item_pedido_atualiza_total — recalcula Pedido.valor_total
+-   3. trg_agendamento_evita_conflito — impede dupla reserva da mesma bancada
+-
+-   Erros de negócio usam THROW com números customizados (>= 50000):
+-     50001 = estoque insuficiente
+-     50002 = conflito de horário na bancada
+-   O Flask pode capturar esses números para devolver 409 (Conflict).
+-   ===================================================================== */
+-
+-USE SaborClic;
+-GO
+-
+-DROP TRIGGER IF EXISTS trg_item_pedido_baixa_estoque;
+-DROP TRIGGER IF EXISTS trg_item_pedido_atualiza_total;
+-DROP TRIGGER IF EXISTS trg_agendamento_evita_conflito;
+-GO
+-
+-/* =====================================================================
+-   1. BAIXA AUTOMÁTICA DE ESTOQUE
+-      Dispara em INSERT, UPDATE e DELETE de Item_Pedido.
+-      Consumo = quantidade do item x quantidade_utilizada da ficha técnica.
+-        - INSERT: debita o consumo das linhas novas;
+-        - DELETE: devolve (estorna) o consumo das linhas removidas;
+-        - UPDATE: debita apenas a diferença entre o novo e o antigo.
+-      O cálculo é feito por ingrediente, em lote, para funcionar quando
+-      várias linhas (ou vários pratos com o mesmo ingrediente) entram
+-      no mesmo comando.
+-   ===================================================================== */
+-CREATE TRIGGER trg_item_pedido_baixa_estoque
+-ON Item_Pedido
+-AFTER INSERT, UPDATE, DELETE
+-AS
+-BEGIN
+-    SET NOCOUNT ON;
+-
+-    DECLARE @variacao TABLE (
+-        id_ingrediente INT PRIMARY KEY,
+-        consumo        DECIMAL(18,3) NOT NULL
+-    );
+-
+-    INSERT INTO @variacao (id_ingrediente, consumo)
+-    SELECT movimentos.id_ingrediente, SUM(movimentos.consumo)
+-    FROM (
+-        SELECT ft.id_ingrediente,
+-               i.quantidade * ft.quantidade_utilizada AS consumo
+-        FROM inserted AS i
+-        JOIN Ficha_Tecnica AS ft ON ft.id_prato = i.id_prato
+-
+-        UNION ALL
+-
+-        SELECT ft.id_ingrediente,
+-               -(d.quantidade * ft.quantidade_utilizada) AS consumo
+-        FROM deleted AS d
+-        JOIN Ficha_Tecnica AS ft ON ft.id_prato = d.id_prato
+-    ) AS movimentos
+-    GROUP BY movimentos.id_ingrediente
+-    HAVING SUM(movimentos.consumo) <> 0;
+-
+-    DECLARE @ingrediente_faltante NVARCHAR(150) = (
+-        SELECT TOP 1 ing.nome
+-        FROM Ingrediente AS ing
+-        JOIN @variacao AS v ON v.id_ingrediente = ing.id_ingrediente
+-        WHERE ing.quantidade_estoque - v.consumo < 0
+-        ORDER BY ing.nome
+-    );
+-
+-    IF @ingrediente_faltante IS NOT NULL
+-    BEGIN
+-        DECLARE @mensagem NVARCHAR(2048) =
+-            CONCAT(N'Estoque insuficiente do ingrediente: ', @ingrediente_faltante);
+-
+-        IF @@TRANCOUNT > 0
+-            ROLLBACK TRANSACTION;
+-
+-        THROW 50001, @mensagem, 1;
+-    END;
+-
+-    UPDATE ing
+-    SET ing.quantidade_estoque = ing.quantidade_estoque - v.consumo
+-    FROM Ingrediente AS ing
+-    JOIN @variacao AS v ON v.id_ingrediente = ing.id_ingrediente;
+-END;
+-GO
+-
+-/* =====================================================================
+-   2. VALOR TOTAL DO PEDIDO
+-      Mantém Pedido.valor_total = soma de (quantidade x preco_unitario)
+-      dos itens. O total passa a ser calculado pelo banco, e não pelo que
+-      o front-end enviar.
+-   ===================================================================== */
+-CREATE TRIGGER trg_item_pedido_atualiza_total
+-ON Item_Pedido
+-AFTER INSERT, UPDATE, DELETE
+-AS
+-BEGIN
+-    SET NOCOUNT ON;
+-
+-    UPDATE p
+-    SET p.valor_total = ISNULL((
+-            SELECT SUM(ip.quantidade * ip.preco_unitario)
+-            FROM Item_Pedido AS ip
+-            WHERE ip.id_pedido = p.id_pedido
+-        ), 0)
+-    FROM Pedido AS p
+-    WHERE p.id_pedido IN (
+-        SELECT id_pedido FROM inserted
+-        UNION
+-        SELECT id_pedido FROM deleted
+-    );
+-END;
+-GO
+-
+-/* =====================================================================
+-   3. CONFLITO DE HORÁRIO NA LOCAÇÃO DE BANCADAS
+-      Dois agendamentos confirmados da mesma bancada não podem se
+-      sobrepor. Dois intervalos se sobrepõem quando cada um começa antes
+-      de o outro terminar. Reservas encostadas (um termina às 12:00 e o
+-      outro começa às 12:00) são permitidas.
+-   ===================================================================== */
+-CREATE TRIGGER trg_agendamento_evita_conflito
+-ON Agendamento
+-AFTER INSERT, UPDATE
+-AS
+-BEGIN
+-    SET NOCOUNT ON;
+-
+-    IF EXISTS (
+-        SELECT 1
+-        FROM inserted AS novo
+-        JOIN Agendamento AS existente
+-          ON existente.id_bancada       = novo.id_bancada
+-         AND existente.id_agendamento  <> novo.id_agendamento
+-         AND existente.status           = N'Confirmado'
+-         AND existente.data_hora_inicio < novo.data_hora_fim
+-         AND existente.data_hora_fim    > novo.data_hora_inicio
+-        WHERE novo.status = N'Confirmado'
+-    )
+-    BEGIN
+-        IF @@TRANCOUNT > 0
+-            ROLLBACK TRANSACTION;
+-
+-        THROW 50002, N'Conflito de horário: a bancada já está reservada neste período.', 1;
+-    END;
+-END;
+-GO
++/* =====================================================================
++   SABOR & CLIC — TRIGGERS (SQLite)
++   Execute DEPOIS do 01_modelo_fisico.sql (e do 02, se quiser os dados).
++
++   Diferenças em relação ao SQL Server (veja DIFERENCAS_SQLServer_vs_SQLite.md):
++     1. SQLite não aceita um trigger para vários eventos: onde o SQL Server usa
++        um único "AFTER INSERT, UPDATE, DELETE", aqui são três triggers.
++     2. O trigger roda uma vez por LINHA (FOR EACH ROW), usando NEW e OLD;
++        no SQL Server roda uma vez por COMANDO, lendo as tabelas inserted/deleted.
++     3. Não existem THROW nem números de erro (50001/50002): o erro é
++        SELECT RAISE(ABORT, 'mensagem'), e a mensagem precisa ser um TEXTO FIXO
++        (não dá para montar "Estoque insuficiente do ingrediente: Arroz").
++        O backend reconhece o erro pelo texto da mensagem.
++     4. RAISE(ABORT) desfaz o comando que disparou o trigger; quem desfaz a
++        transação inteira é o rollback da aplicação (ROLLBACK não é usado no trigger).
++     5. Não existe DECLARE nem tabela variável: tudo é feito com subconsultas.
++   ===================================================================== */
++
++DROP TRIGGER IF EXISTS trg_item_pedido_baixa_estoque_ins;
++DROP TRIGGER IF EXISTS trg_item_pedido_baixa_estoque_upd;
++DROP TRIGGER IF EXISTS trg_item_pedido_baixa_estoque_del;
++DROP TRIGGER IF EXISTS trg_item_pedido_total_ins;
++DROP TRIGGER IF EXISTS trg_item_pedido_total_upd;
++DROP TRIGGER IF EXISTS trg_item_pedido_total_del;
++DROP TRIGGER IF EXISTS trg_agendamento_conflito_ins;
++DROP TRIGGER IF EXISTS trg_agendamento_conflito_upd;
++
++/* =====================================================================
++   1. BAIXA AUTOMÁTICA DE ESTOQUE
++      Consumo = quantidade do item x quantidade_utilizada da ficha técnica.
++        - INSERT: debita o consumo da linha nova;
++        - DELETE: devolve (estorna) o consumo da linha removida;
++        - UPDATE: devolve o consumo antigo e debita o novo.
++   ===================================================================== */
++CREATE TRIGGER trg_item_pedido_baixa_estoque_ins
++AFTER INSERT ON Item_Pedido
++BEGIN
++    SELECT RAISE(ABORT, 'Estoque insuficiente de ingrediente para este pedido.')
++    WHERE EXISTS (
++        SELECT 1
++        FROM Ficha_Tecnica AS ft
++        JOIN Ingrediente   AS i ON i.id_ingrediente = ft.id_ingrediente
++        WHERE ft.id_prato = NEW.id_prato
++          AND ROUND(i.quantidade_estoque - NEW.quantidade * ft.quantidade_utilizada, 3) < 0
++    );
++
++    UPDATE Ingrediente
++    SET quantidade_estoque = ROUND(quantidade_estoque - NEW.quantidade * (
++            SELECT ft.quantidade_utilizada
++            FROM Ficha_Tecnica AS ft
++            WHERE ft.id_prato = NEW.id_prato
++              AND ft.id_ingrediente = Ingrediente.id_ingrediente), 3)
++    WHERE id_ingrediente IN (SELECT id_ingrediente FROM Ficha_Tecnica WHERE id_prato = NEW.id_prato);
++END;
++
++CREATE TRIGGER trg_item_pedido_baixa_estoque_del
++AFTER DELETE ON Item_Pedido
++BEGIN
++    UPDATE Ingrediente
++    SET quantidade_estoque = ROUND(quantidade_estoque + OLD.quantidade * (
++            SELECT ft.quantidade_utilizada
++            FROM Ficha_Tecnica AS ft
++            WHERE ft.id_prato = OLD.id_prato
++              AND ft.id_ingrediente = Ingrediente.id_ingrediente), 3)
++    WHERE id_ingrediente IN (SELECT id_ingrediente FROM Ficha_Tecnica WHERE id_prato = OLD.id_prato);
++END;
++
++CREATE TRIGGER trg_item_pedido_baixa_estoque_upd
++AFTER UPDATE OF quantidade, id_prato ON Item_Pedido
++BEGIN
++    UPDATE Ingrediente
++    SET quantidade_estoque = ROUND(quantidade_estoque + OLD.quantidade * (
++            SELECT ft.quantidade_utilizada
++            FROM Ficha_Tecnica AS ft
++            WHERE ft.id_prato = OLD.id_prato
++              AND ft.id_ingrediente = Ingrediente.id_ingrediente), 3)
++    WHERE id_ingrediente IN (SELECT id_ingrediente FROM Ficha_Tecnica WHERE id_prato = OLD.id_prato);
++
++    SELECT RAISE(ABORT, 'Estoque insuficiente de ingrediente para este pedido.')
++    WHERE EXISTS (
++        SELECT 1
++        FROM Ficha_Tecnica AS ft
++        JOIN Ingrediente   AS i ON i.id_ingrediente = ft.id_ingrediente
++        WHERE ft.id_prato = NEW.id_prato
++          AND ROUND(i.quantidade_estoque - NEW.quantidade * ft.quantidade_utilizada, 3) < 0
++    );
++
++    UPDATE Ingrediente
++    SET quantidade_estoque = ROUND(quantidade_estoque - NEW.quantidade * (
++            SELECT ft.quantidade_utilizada
++            FROM Ficha_Tecnica AS ft
++            WHERE ft.id_prato = NEW.id_prato
++              AND ft.id_ingrediente = Ingrediente.id_ingrediente), 3)
++    WHERE id_ingrediente IN (SELECT id_ingrediente FROM Ficha_Tecnica WHERE id_prato = NEW.id_prato);
++END;
++
++/* =====================================================================
++   2. VALOR TOTAL DO PEDIDO
++      Mantém Pedido.valor_total = soma de (quantidade x preco_unitario)
++      dos itens. O total é calculado pelo banco, e não pelo front-end.
++   ===================================================================== */
++CREATE TRIGGER trg_item_pedido_total_ins
++AFTER INSERT ON Item_Pedido
++BEGIN
++    UPDATE Pedido
++    SET valor_total = ROUND(COALESCE((
++            SELECT SUM(quantidade * preco_unitario) FROM Item_Pedido WHERE id_pedido = NEW.id_pedido), 0), 2)
++    WHERE id_pedido = NEW.id_pedido;
++END;
++
++CREATE TRIGGER trg_item_pedido_total_upd
++AFTER UPDATE ON Item_Pedido
++BEGIN
++    UPDATE Pedido
++    SET valor_total = ROUND(COALESCE((
++            SELECT SUM(quantidade * preco_unitario) FROM Item_Pedido WHERE id_pedido = Pedido.id_pedido), 0), 2)
++    WHERE id_pedido IN (NEW.id_pedido, OLD.id_pedido);
++END;
++
++CREATE TRIGGER trg_item_pedido_total_del
++AFTER DELETE ON Item_Pedido
++BEGIN
++    UPDATE Pedido
++    SET valor_total = ROUND(COALESCE((
++            SELECT SUM(quantidade * preco_unitario) FROM Item_Pedido WHERE id_pedido = OLD.id_pedido), 0), 2)
++    WHERE id_pedido = OLD.id_pedido;
++END;
++
++/* =====================================================================
++   3. CONFLITO DE HORÁRIO NA LOCAÇÃO DE BANCADAS
++      Dois agendamentos confirmados da mesma bancada não podem se
++      sobrepor. Reservas encostadas (uma termina às 12:00 e outra começa
++      às 12:00) são permitidas. Aqui o trigger é BEFORE (barra antes de gravar);
++      no SQL Server é AFTER e precisou de ROLLBACK + THROW.
++   ===================================================================== */
++CREATE TRIGGER trg_agendamento_conflito_ins
++BEFORE INSERT ON Agendamento
++WHEN NEW.status = 'Confirmado'
++BEGIN
++    SELECT RAISE(ABORT, 'Conflito de horário: a bancada já está reservada neste período.')
++    WHERE EXISTS (
++        SELECT 1
++        FROM Agendamento AS existente
++        WHERE existente.id_bancada       = NEW.id_bancada
++          AND existente.status           = 'Confirmado'
++          AND existente.data_hora_inicio < NEW.data_hora_fim
++          AND existente.data_hora_fim    > NEW.data_hora_inicio
++    );
++END;
++
++CREATE TRIGGER trg_agendamento_conflito_upd
++BEFORE UPDATE OF id_bancada, data_hora_inicio, data_hora_fim, status ON Agendamento
++WHEN NEW.status = 'Confirmado'
++BEGIN
++    SELECT RAISE(ABORT, 'Conflito de horário: a bancada já está reservada neste período.')
++    WHERE EXISTS (
++        SELECT 1
++        FROM Agendamento AS existente
++        WHERE existente.id_bancada       = NEW.id_bancada
++          AND existente.id_agendamento  <> NEW.id_agendamento
++          AND existente.status           = 'Confirmado'
++          AND existente.data_hora_inicio < NEW.data_hora_fim
++          AND existente.data_hora_fim    > NEW.data_hora_inicio
++    );
++END;
